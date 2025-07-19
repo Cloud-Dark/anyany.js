@@ -1,8 +1,3 @@
-
-<p align="center">
-  <img src="img/anyany.png" alt="anyany.js logo" width="320" />
-</p>
-
 # anyany.js
 
 CLI QA AI Agent for bug analysis, scenario prioritization, and automated test data generation. Supports OpenAI (GPT-4) and Ollama (local models such as gemma2:2b).
@@ -49,6 +44,10 @@ Follow the CLI instructions:
 
 ## Demo
 [See video demo here](https://jam.dev/c/411cae17-759d-4ee4-80c6-34d4db8a826e)
+
+<p align="center">
+  <img src="img/anyany.png" alt="anyany.js logo" width="600" />
+</p>
 
 ## Notes
 - The `node_modules` folder and `.env` file are never uploaded to the repo (see `.gitignore`)
