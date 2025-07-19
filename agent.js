@@ -43,13 +43,13 @@ async function runAgent(modelName, task, inputText, submodel) {
   const model = MODELS[modelName];
   if (!model) throw new Error(`Model ${modelName} not supported.`);
 
-  // Spinner animasi loading
+  // Loading spinner animation
   const spinnerFrames = ['|', '/', '-', '\\'];
   let spinnerIndex = 0;
   let spinnerActive = true;
-  process.stdout.write('⏳ Memproses');
+  process.stdout.write('⏳ Processing');
   const spinner = setInterval(() => {
-    process.stdout.write(`\r⏳ Memproses ${spinnerFrames[spinnerIndex++ % spinnerFrames.length]}`);
+    process.stdout.write(`\r⏳ Processing ${spinnerFrames[spinnerIndex++ % spinnerFrames.length]}`);
   }, 120);
 
   let result, errorMsg = null, rawText = null;
@@ -63,9 +63,9 @@ async function runAgent(modelName, task, inputText, submodel) {
       body
     });
     rawText = await res.text();
-    // Cek apakah response streaming JSONL (Ollama)
+    // Check if response is streaming JSONL (Ollama)
     if (modelName === 'ollama') {
-      // Gabungkan semua field 'response' dari setiap baris JSON
+      // Combine all 'response' fields from each JSON line
       try {
         const lines = rawText.split(/\r?\n/).filter(Boolean);
         let combined = '';
@@ -76,38 +76,38 @@ async function runAgent(modelName, task, inputText, submodel) {
           } catch {}
         }
         result = combined.trim();
-        if (!result) errorMsg = 'Model tidak mengembalikan output yang valid. Response mentah:\n' + rawText;
+        if (!result) errorMsg = 'Model did not return a valid output. Raw response:\n' + rawText;
       } catch (e) {
-        errorMsg = 'Gagal parsing streaming JSON dari response. Response mentah:\n' + rawText;
+        errorMsg = 'Failed to parse streaming JSON from response. Raw response:\n' + rawText;
       }
     } else {
-      // OpenAI: parse JSON biasa
+      // OpenAI: regular JSON parse
       let json;
       try {
         json = JSON.parse(rawText);
       } catch (jsonErr) {
-        errorMsg = 'Gagal parsing JSON dari response. Response mentah:\n' + rawText;
+        errorMsg = 'Failed to parse JSON from response. Raw response:\n' + rawText;
       }
       if (!errorMsg) {
         try {
           result = model.extract(json);
         } catch (e) {
-          errorMsg = 'Gagal mengekstrak hasil dari response model: ' + e + '\nResponse mentah: ' + JSON.stringify(json, null, 2);
+          errorMsg = 'Failed to extract result from model response: ' + e + '\nRaw response: ' + JSON.stringify(json, null, 2);
         }
         if (typeof result === 'undefined' || result === null) {
-          errorMsg = 'Model tidak mengembalikan output yang valid. Response mentah: ' + JSON.stringify(json, null, 2);
+          errorMsg = 'Model did not return a valid output. Raw response: ' + JSON.stringify(json, null, 2);
         }
       }
     }
   } catch (e) {
-    errorMsg = 'Terjadi error saat memproses request: ' + e;
+    errorMsg = 'An error occurred while processing the request: ' + e;
   }
   clearInterval(spinner);
   process.stdout.write('\r');
   spinnerActive = false;
 
   if (errorMsg) {
-    console.log(`\n❌ Task gagal dijalankan: ${errorMsg}\n`);
+    console.log(`\n❌ Task failed: ${errorMsg}\n`);
     return false;
   }
   const outputFile = `output/${task.replace(/\s+/g, '_')}.txt`;
@@ -149,24 +149,24 @@ async function waitForOllamaReady(timeout = 15000) {
 
 async function main() {
   console.log("🔧 QA AI Agent CLI");
-  const model = await ask("Pilih model (openai/ollama): ");
+  const model = await ask("Choose model (openai/ollama): ");
   let submodel = 'gemma:2b';
   if (model.trim() === 'ollama') {
-    // Cek dan jalankan server Ollama jika belum aktif
+    // Check and start Ollama server if not running
     if (!(await isOllamaRunning())) {
-      console.log("Menjalankan server Ollama...");
+      console.log("Starting Ollama server...");
       startOllamaServer();
       const ready = await waitForOllamaReady();
       if (!ready) {
-        console.error("Gagal menjalankan server Ollama. Pastikan Ollama sudah terinstall dan dapat dijalankan dari command line.");
+        console.error("Failed to start Ollama server. Make sure Ollama is installed and can be run from the command line.");
         process.exit(1);
       }
-      console.log("Server Ollama siap!");
+      console.log("Ollama server is ready!");
     } else {
-      console.log("Server Ollama sudah aktif.");
+      console.log("Ollama server is already running.");
     }
 
-    // Ambil daftar model lokal yang tersedia di Ollama
+    // Get list of local models available in Ollama
     let localModels = [];
     try {
       const res = await fetch('http://localhost:11434/api/tags', { method: 'GET' });
@@ -177,41 +177,41 @@ async function main() {
         }
       }
     } catch (e) {
-      // abaikan error, lanjutkan saja
+      // ignore error, just continue
     }
     if (localModels.length > 0) {
-      console.log("Model lokal yang tersedia di Ollama:");
+      console.log("Local models available in Ollama:");
       localModels.forEach(m => console.log("- " + m));
     } else {
-      console.log("Tidak dapat mengambil daftar model lokal dari Ollama. Pastikan server berjalan dan model sudah di-pull.");
+      console.log("Could not fetch list of local models from Ollama. Make sure the server is running and models are pulled.");
     }
-    submodel = await ask("Pilih model lokal Ollama sesuai daftar di atas: ");
+    submodel = await ask("Choose Ollama local model from the list above: ");
   }
   while (true) {
-    const task = await ask("Masukkan nama task (contoh: bug_analyst, test_data_generator, scenario_priority): ");
-    let inputPrompt = "Masukkan input deskripsi/log: \n";
+    const task = await ask("Enter task name (e.g. bug_analyst, test_data_generator, scenario_priority): ");
+    let inputPrompt = "Enter input description/log: \n";
     let promptInstruksi = '';
     const t = task.trim().toLowerCase();
     if (t.includes('bug')) {
-      inputPrompt = "Masukkan detail bug, error, atau log yang ingin dianalisis:\n";
+      inputPrompt = "Enter bug, error, or log details to analyze:\n";
       promptInstruksi = PROMPTS.bug_analyst;
     } else if (t.includes('test_data')) {
-      inputPrompt = "Masukkan deskripsi kebutuhan test data atau skenario yang diinginkan:\n";
+      inputPrompt = "Enter description of required test data or scenario:\n";
       promptInstruksi = PROMPTS.test_data_generator;
     } else if (t.includes('scenario_priority') || t.includes('priority')) {
-      inputPrompt = "Masukkan daftar skenario atau requirement yang ingin diprioritaskan:\n";
+      inputPrompt = "Enter list of scenarios or requirements to prioritize:\n";
       promptInstruksi = PROMPTS.scenario_priority;
     }
     const inputTextUser = await ask(inputPrompt);
-    // Gabungkan instruksi prompt dengan input user jika ada instruksi khusus
+    // Combine prompt instruction with user input if special instruction exists
     const inputText = promptInstruksi ? `${promptInstruksi}\n\n${inputTextUser}` : inputTextUser;
     const success = await runAgent(model.trim(), task.trim(), inputText, submodel.trim());
     if (success) {
-      // Setelah sukses, lanjut ke task berikutnya tanpa break
+      // After success, continue to next task without break
       continue;
     }
-    // Jika gagal, ulangi input task dan deskripsi
-    console.log("Silakan masukkan ulang task dan deskripsi/log.");
+    // If failed, repeat task and description input
+    console.log("Please re-enter the task and description/log.");
   }
 }
 
