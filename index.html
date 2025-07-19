@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>anyany.js – AI QA Agent CLI</title>
+  <meta name="description" content="CLI QA AI Agent for bug analysis, scenario prioritization, and automated test data generation. Supports OpenAI and Ollama.">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:400,700&display=swap">
+  <style>
+    body {
+      font-family: 'Inter', Arial, sans-serif;
+      background: #f8fafc;
+      color: #222;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 720px;
+      margin: 40px auto;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.07);
+      padding: 32px 24px 40px 24px;
+    }
+    .logo {
+      display: block;
+      margin: 0 auto 24px auto;
+      max-width: 220px;
+    }
+    h1 {
+      text-align: center;
+      font-size: 2.5rem;
+      margin-bottom: 8px;
+      font-weight: 700;
+      letter-spacing: -1px;
+    }
+    .subtitle {
+      text-align: center;
+      color: #555;
+      font-size: 1.2rem;
+      margin-bottom: 32px;
+    }
+    .features {
+      margin: 32px 0 24px 0;
+      padding: 0;
+      list-style: none;
+    }
+    .features li {
+      margin-bottom: 12px;
+      padding-left: 1.2em;
+      position: relative;
+    }
+    .features li:before {
+      content: '✔';
+      color: #2e7d32;
+      position: absolute;
+      left: 0;
+      font-size: 1.1em;
+    }
+    .section-title {
+      font-size: 1.3rem;
+      margin-top: 36px;
+      margin-bottom: 12px;
+      font-weight: 600;
+      color: #1a237e;
+    }
+    pre, code {
+      background: #f3f6fa;
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 1em;
+      overflow-x: auto;
+    }
+    .demo {
+      text-align: center;
+      margin: 32px 0 24px 0;
+    }
+    .demo a {
+      color: #1976d2;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .footer {
+      text-align: center;
+      color: #888;
+      font-size: 0.95em;
+      margin-top: 40px;
+    }
+    @media (max-width: 600px) {
+      .container { padding: 16px 4px 24px 4px; }
+      h1 { font-size: 2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <img src="img/anyany.png" alt="anyany.js logo" class="logo" />
+    <h1>anyany.js</h1>
+    <div class="subtitle">AI-powered CLI for QA: Bug Analysis, Scenario Prioritization, and Test Data Generation.<br>Supports <b>OpenAI</b> & <b>Ollama</b> (local LLMs).</div>
+
+    <ul class="features">
+      <li>Choose between OpenAI (cloud) or Ollama (local) models</li>
+      <li>Automatic structured prompts for bug, scenario, and test data tasks</li>
+      <li>Results saved in the <code>output/</code> folder</li>
+      <li>Auto-detects and starts Ollama server if needed</li>
+      <li>Environment variables are safe – <code>.env</code> never committed</li>
+    </ul>
+
+    <div class="section-title">Quick Start</div>
+    <pre><code>git clone https://github.com/modalqa/anyany.js.git
+cd anyany.js
+npm install
+cp .env.example .env
+# Edit .env and set your OPENAI_API_KEY if you want to use OpenAI
+node agent.js</code></pre>
+
+    <div class="section-title">Demo</div>
+    <div class="demo">
+      <a href="https://jam.dev/c/411cae17-759d-4ee4-80c6-34d4db8a826e" target="_blank">Watch the video demo</a>
+      <br><br>
+      <img src="img/anyany.png" alt="anyany.js CLI Screenshot" style="max-width:340px; margin-top:12px; border-radius:8px; box-shadow:0 2px 12px rgba(0,0,0,0.08);" />
+    </div>
+
+    <div class="section-title">Example Prompts</div>
+    <pre><code># Bug Analyst
+Analyze the following bug description or log and provide a structured output with:
+- Bug Title
+- Possible Cause
+- Steps to Reproduce
+- Expected Result
+- Actual Result
+- Impact Level (Low/Medium/High/Critical)
+- Suggested Next Step
+
+# Scenario Priority
+Analyze the following test scenarios and assign a priority (High/Medium/Low) based on user impact, likelihood, and technical complexity. Provide logical justification for each.
+
+# Test Data Generator
+Generate test data for the following scenario. Include:
+- Field Name
+- Valid Data
+- Invalid Data
+- Edge Case Data
+- Justification
+Format the result as JSON.
+</code></pre>
+
+    <div class="footer">
+      MIT &copy; modalqa &mdash; <a href="https://github.com/modalqa/anyany.js" target="_blank">GitHub</a>
+    </div>
+  </div>
+</body>
+</html>
