@@ -32,8 +32,47 @@ const MODELS = {
     headers: () => ({ 'Content-Type': 'application/json' }),
     format: (input, submodel = 'gemma2:2b') => ({ model: submodel, prompt: input }),
     extract: (res) => res.response
+  },
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    key: process.env.OPENROUTER_API_KEY,
+    headers: (key) => ({
+      'Authorization': `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'http://localhost:3000', // Optional: your app URL
+      'X-Title': 'QA AI Agent CLI' // Optional: your app name
+    }),
+    format: (input, submodel = 'google/gemini-2.0-flash-001') => ({
+      model: submodel,
+      messages: [{ role: 'user', content: input }]
+    }),
+    extract: (res) => res.choices[0].message.content
   }
 };
+
+// Fungsi untuk mendapatkan model yang tersedia di OpenRouter
+async function getOpenRouterModels() {
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
+      }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.data.map(model => ({
+        id: model.id,
+        name: model.name,
+        pricing: model.pricing
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.log("Could not fetch OpenRouter models:", error.message);
+    return [];
+  }
+}
 
 async function ask(prompt) {
   return new Promise(resolve => rl.question(prompt, resolve));
@@ -55,7 +94,7 @@ async function runAgent(modelName, task, inputText, submodel) {
   let result, errorMsg = null, rawText = null;
   try {
     const body = JSON.stringify(
-      modelName === 'ollama' ? model.format(inputText, submodel) : model.format(inputText)
+      modelName === 'ollama' ? model.format(inputText, submodel) : model.format(inputText, submodel)
     );
     const res = await fetch(model.url, {
       method: 'POST',
@@ -63,6 +102,7 @@ async function runAgent(modelName, task, inputText, submodel) {
       body
     });
     rawText = await res.text();
+    
     // Check if response is streaming JSONL (Ollama)
     if (modelName === 'ollama') {
       // Combine all 'response' fields from each JSON line
@@ -81,7 +121,7 @@ async function runAgent(modelName, task, inputText, submodel) {
         errorMsg = 'Failed to parse streaming JSON from response. Raw response:\n' + rawText;
       }
     } else {
-      // OpenAI: regular JSON parse
+      // OpenAI dan OpenRouter: regular JSON parse
       let json;
       try {
         json = JSON.parse(rawText);
@@ -149,8 +189,9 @@ async function waitForOllamaReady(timeout = 15000) {
 
 async function main() {
   console.log("🔧 QA AI Agent CLI");
-  const model = await ask("Choose model (openai/ollama): ");
+  const model = await ask("Choose model (openai/ollama/openrouter): ");
   let submodel = 'gemma:2b';
+  
   if (model.trim() === 'ollama') {
     // Check and start Ollama server if not running
     if (!(await isOllamaRunning())) {
@@ -186,7 +227,44 @@ async function main() {
       console.log("Could not fetch list of local models from Ollama. Make sure the server is running and models are pulled.");
     }
     submodel = await ask("Choose Ollama local model from the list above: ");
+    
+  } else if (model.trim() === 'openrouter') {
+    // Get OpenRouter models
+    console.log("Fetching available OpenRouter models...");
+    const availableModels = await getOpenRouterModels();
+    
+    if (availableModels.length > 0) {
+      console.log("\nPopular models available in OpenRouter:");
+      const popularModels = [
+        'anthropic/claude-3-haiku',
+        'anthropic/claude-3-sonnet', 
+        'openai/gpt-4o',
+        'openai/gpt-3.5-turbo',
+        'meta-llama/llama-3-70b-instruct',
+        'google/gemini-pro',
+        'mistralai/mistral-7b-instruct',
+        'google/gemini-2.0-flash-001'
+      ];
+      
+      popularModels.forEach(modelId => {
+        const found = availableModels.find(m => m.id === modelId);
+        if (found) {
+          console.log(`- ${modelId} (${found.name})`);
+        }
+      });
+      
+      console.log("\nFor full list, visit: https://openrouter.ai/models");
+    } else {
+      console.log("Could not fetch OpenRouter models. Using default model.");
+    }
+    
+    submodel = await ask("Choose OpenRouter model (default: anthropic/claude-3-haiku): ") || 'anthropic/claude-3-haiku';
+    
+  } else if (model.trim() === 'openai') {
+    // Set default for OpenAI
+    submodel = 'gpt-4';
   }
+  
   while (true) {
     const task = await ask("Enter task name (e.g. bug_analyst, test_data_generator, scenario_priority): ");
     let inputPrompt = "Enter input description/log: \n";
