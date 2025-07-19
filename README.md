@@ -1,6 +1,6 @@
 # anyany.js
 
-CLI QA AI Agent for bug analysis, scenario prioritization, and automated test data generation. Supports OpenAI (GPT-4) and Ollama (local models such as gemma2:2b).
+GenAI CLI for QA: bug analysis, scenario prioritization, and automated test data generation. Supports OpenAI (GPT-4) and Ollama (local models such as gemma2:2b).
 
 ## Features
 - Choose model: OpenAI (cloud) or Ollama (local)
