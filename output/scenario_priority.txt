@@ -1,0 +1,17 @@
+## Scenario Analysis:
+
+**Scenario Description:** Login with valid username and password, then login with invalid username and password more than 100 times within a minute.
+
+**Priority:** **High**
+
+**Justification:**
+
+- **Impact to users:**  This scenario directly impacts the user's ability to access their accounts. Frequent invalid login attempts can lead to account lockout (potentially requiring reset of password) or even block access altogether, causing inconvenience and frustration for users. 
+- **Frequency of use:** This scenario reflects a deliberate attempt to exploit the system through brute force techniques. High frequency suggests that this behavior could be easily implemented by malicious actors aiming to compromise accounts. 
+- **Complexity of implementation:**  Testing for invalid login attempts is relatively straightforward in terms of testing logic and automated execution, but it may require setting up realistic scenarios with potential user fatigue. Additionally, the scenario should be designed to cover different authentication methods (e.g., two-factor authentication) and account recovery procedures. 
+
+**Therefore, this scenario demands high priority because:**
+
+1. **Impact on users is significant.** This directly relates to functionality and access, affecting a core element of user experience.
+2. **The behavior is easily exploitable.** The scenario emphasizes the vulnerability of the system through brute force attacks, highlighting potential security breaches.
+3. **Implementation complexity requires attention to detail**. While the logic for testing is relatively simple, realistic scenarios with multiple authentication methods are crucial for comprehensive testing.
