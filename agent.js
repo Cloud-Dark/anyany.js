@@ -32,11 +32,66 @@ const MODELS = {
     headers: () => ({ 'Content-Type': 'application/json' }),
     format: (input, submodel = 'gemma2:2b') => ({ model: submodel, prompt: input }),
     extract: (res) => res.response
+  },
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    key: process.env.OPENROUTER_API_KEY,
+    headers: (key) => ({
+      'Authorization': `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'http://localhost:3000',
+      'X-Title': 'QA AI Agent CLI'
+    }),
+    format: (input, submodel = 'google/gemini-2.0-flash-001') => ({
+      model: submodel,
+      messages: [{ role: 'user', content: input }]
+    }),
+    extract: (res) => res.choices[0].message.content
   }
 };
 
+// Fungsi untuk mendapatkan model yang tersedia di OpenRouter
+async function getOpenRouterModels() {
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
+      }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.data.map(model => ({
+        id: model.id,
+        name: model.name,
+        pricing: model.pricing
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.log("Could not fetch OpenRouter models:", error.message);
+    return [];
+  }
+}
+
 async function ask(prompt) {
   return new Promise(resolve => rl.question(prompt, resolve));
+}
+
+// Fungsi untuk memilih dari daftar bernomor
+async function selectFromList(items, prompt, defaultIndex = 0) {
+  console.log(prompt);
+  items.forEach((item, index) => {
+    console.log(`${index + 1}. ${item}`);
+  });
+  
+  const choice = await ask(`Enter number (1-${items.length}, default: ${defaultIndex + 1}): `);
+  const selectedIndex = parseInt(choice.trim()) - 1;
+  
+  if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= items.length) {
+    return defaultIndex;
+  }
+  return selectedIndex;
 }
 
 async function runAgent(modelName, task, inputText, submodel) {
@@ -55,7 +110,7 @@ async function runAgent(modelName, task, inputText, submodel) {
   let result, errorMsg = null, rawText = null;
   try {
     const body = JSON.stringify(
-      modelName === 'ollama' ? model.format(inputText, submodel) : model.format(inputText)
+      modelName === 'ollama' ? model.format(inputText, submodel) : model.format(inputText, submodel)
     );
     const res = await fetch(model.url, {
       method: 'POST',
@@ -63,6 +118,7 @@ async function runAgent(modelName, task, inputText, submodel) {
       body
     });
     rawText = await res.text();
+    
     // Check if response is streaming JSONL (Ollama)
     if (modelName === 'ollama') {
       // Combine all 'response' fields from each JSON line
@@ -81,7 +137,7 @@ async function runAgent(modelName, task, inputText, submodel) {
         errorMsg = 'Failed to parse streaming JSON from response. Raw response:\n' + rawText;
       }
     } else {
-      // OpenAI: regular JSON parse
+      // OpenAI dan OpenRouter: regular JSON parse
       let json;
       try {
         json = JSON.parse(rawText);
@@ -128,7 +184,6 @@ async function isOllamaRunning() {
 
 // Start Ollama server if not running
 function startOllamaServer() {
-  // Windows: run in background
   const proc = spawn('ollama', ['serve'], {
     detached: true,
     stdio: 'ignore',
@@ -149,9 +204,17 @@ async function waitForOllamaReady(timeout = 15000) {
 
 async function main() {
   console.log("🔧 QA AI Agent CLI");
-  const model = await ask("Choose model (openai/ollama): ");
-  let submodel = 'gemma:2b';
-  if (model.trim() === 'ollama') {
+  
+  // Pilih model provider dengan nomor
+  const modelProviders = ['OpenAI', 'Ollama (Local)', 'OpenRouter'];
+  const modelKeys = ['openai', 'ollama', 'openrouter'];
+  
+  const providerIndex = await selectFromList(modelProviders, "\nChoose model provider:", 0);
+  const model = modelKeys[providerIndex];
+  
+  let submodel = '';
+  
+  if (model === 'ollama') {
     // Check and start Ollama server if not running
     if (!(await isOllamaRunning())) {
       console.log("Starting Ollama server...");
@@ -179,40 +242,129 @@ async function main() {
     } catch (e) {
       // ignore error, just continue
     }
+    
     if (localModels.length > 0) {
-      console.log("Local models available in Ollama:");
-      localModels.forEach(m => console.log("- " + m));
+      const modelIndex = await selectFromList(localModels, "\nAvailable Ollama models:", 0);
+      submodel = localModels[modelIndex];
     } else {
-      console.log("Could not fetch list of local models from Ollama. Make sure the server is running and models are pulled.");
+      console.log("Could not fetch local models from Ollama. Using default.");
+      submodel = 'gemma2:2b';
     }
-    submodel = await ask("Choose Ollama local model from the list above: ");
+    
+  } else if (model === 'openrouter') {
+    // Get OpenRouter models
+    console.log("Fetching available OpenRouter models...");
+    const availableModels = await getOpenRouterModels();
+
+    // Daftar model populer dengan prioritas Gemini dan model ekonomis
+    const popularModels = [
+      { id: 'google/gemini-2.0-flash-001', desc: 'Gemini 2.0 Flash - Latest & Economic 💰' },
+      { id: 'google/gemini-pro', desc: 'Gemini Pro - Reliable & Affordable 💰' },
+      { id: 'google/gemini-1.5-flash', desc: 'Gemini 1.5 Flash - Fast & Cheap 💰' },
+      { id: 'openai/gpt-3.5-turbo', desc: 'GPT-3.5 Turbo - Fast & Economic 💰' },
+      { id: 'meta-llama/llama-3-8b-instruct', desc: 'Llama 3 8B - Open Source Budget 💰' },
+      { id: 'mistralai/mistral-7b-instruct', desc: 'Mistral 7B - European Budget Model 💰' },
+      { id: 'openai/gpt-4o-mini', desc: 'GPT-4o Mini - Small but Powerful 💰' },
+      { id: 'openai/gpt-4o', desc: 'GPT-4o - Premium Quality 💸' },
+      { id: 'meta-llama/llama-3-70b-instruct', desc: 'Llama 3 70B - Open Source Power 💸' },
+      { id: 'custom', desc: 'Custom Model - Enter your own model ID 🎯' } // Tambahkan opsi custom
+    ];
+
+    // Filter model yang benar-benar tersedia (kecuali custom)
+    const availablePopularModels = popularModels.filter(model =>
+      model.id === 'custom' || availableModels.some(available => available.id === model.id)
+    );
+
+    if (availablePopularModels.length > 0) {
+      const modelDescriptions = availablePopularModels.map(m => m.desc);
+      const modelIndex = await selectFromList(modelDescriptions, "\nPopular OpenRouter models (💰 = Economic, 💸 = Premium, 🎯 = Custom):", 0);
+
+      // Jika pilihan adalah custom model
+      if (availablePopularModels[modelIndex].id === 'custom') {
+        console.log("\nAvailable models from OpenRouter:");
+        if (availableModels.length > 0) {
+          // Tampilkan beberapa contoh model yang tersedia
+          console.log("Some examples:");
+          availableModels.slice(0, 10).forEach((model, index) => {
+            const pricing = model.pricing ? `($${model.pricing.prompt}/${model.pricing.completion})` : '';
+            console.log(`  - ${model.id} ${pricing}`);
+          });
+          if (availableModels.length > 10) {
+            console.log(`  ... and ${availableModels.length - 10} more models`);
+          }
+        }
+
+        submodel = await ask("\nEnter custom model ID (e.g., anthropic/claude-3-haiku): ");
+
+        // Validasi apakah model yang dimasukkan tersedia
+        const isValidModel = availableModels.some(model => model.id === submodel);
+        if (!isValidModel && submodel.trim()) {
+          console.log(`⚠️  Warning: Model '${submodel}' not found in available models list. Proceeding anyway...`);
+        }
+      } else {
+        submodel = availablePopularModels[modelIndex].id;
+      }
+    } else {
+      console.log("Could not fetch OpenRouter models. Using default Gemini.");
+      submodel = 'google/gemini-2.0-flash-001';
+    }
+  } else if (model === 'openai') {
+    // Model OpenAI dengan prioritas model ekonomis
+    const openaiModels = [
+      { id: 'gpt-3.5-turbo', desc: 'GPT-3.5 Turbo - Economic Choice 💰' },
+      { id: 'gpt-4o-mini', desc: 'GPT-4o Mini - Small & Efficient 💰' },
+      { id: 'gpt-4-turbo', desc: 'GPT-4 Turbo - Balanced Performance 💸' },
+      { id: 'gpt-4', desc: 'GPT-4 - Most Capable 💸' }
+    ];
+    
+    const modelDescriptions = openaiModels.map(m => m.desc);
+    const modelIndex = await selectFromList(modelDescriptions, "\nAvailable OpenAI models (💰 = Economic, 💸 = Premium):", 0);
+    submodel = openaiModels[modelIndex].id;
   }
+  
+  console.log(`\n✅ Selected: ${modelProviders[providerIndex]} - ${submodel}\n`);
+  
   while (true) {
-    const task = await ask("Enter task name (e.g. bug_analyst, test_data_generator, scenario_priority): ");
-    let inputPrompt = "Enter input description/log: \n";
-    let promptInstruksi = '';
-    const t = task.trim().toLowerCase();
-    if (t.includes('bug')) {
+    // Pilih task dengan nomor
+    const tasks = [
+      { key: 'bug_analyst', name: 'Bug Analysis', prompt: PROMPTS.bug_analyst },
+      { key: 'test_data_generator', name: 'Test Data Generator', prompt: PROMPTS.test_data_generator },
+      { key: 'scenario_priority', name: 'Scenario Priority Analysis', prompt: PROMPTS.scenario_priority },
+      { key: 'custom', name: 'Custom Task (No Special Prompt)', prompt: '' }
+    ];
+    
+    const taskNames = tasks.map(t => t.name);
+    const taskIndex = await selectFromList(taskNames, "\nChoose task type:", 0);
+    const selectedTask = tasks[taskIndex];
+    
+    let inputPrompt = "Enter your input:\n";
+    if (selectedTask.key === 'bug_analyst') {
       inputPrompt = "Enter bug, error, or log details to analyze:\n";
-      promptInstruksi = PROMPTS.bug_analyst;
-    } else if (t.includes('test_data')) {
+    } else if (selectedTask.key === 'test_data_generator') {
       inputPrompt = "Enter description of required test data or scenario:\n";
-      promptInstruksi = PROMPTS.test_data_generator;
-    } else if (t.includes('scenario_priority') || t.includes('priority')) {
+    } else if (selectedTask.key === 'scenario_priority') {
       inputPrompt = "Enter list of scenarios or requirements to prioritize:\n";
-      promptInstruksi = PROMPTS.scenario_priority;
     }
+    
     const inputTextUser = await ask(inputPrompt);
     // Combine prompt instruction with user input if special instruction exists
-    const inputText = promptInstruksi ? `${promptInstruksi}\n\n${inputTextUser}` : inputTextUser;
-    const success = await runAgent(model.trim(), task.trim(), inputText, submodel.trim());
+    const inputText = selectedTask.prompt ? `${selectedTask.prompt}\n\n${inputTextUser}` : inputTextUser;
+    
+    const success = await runAgent(model, selectedTask.key, inputText, submodel);
     if (success) {
-      // After success, continue to next task without break
+      console.log("Task completed successfully!\n");
+      const continueChoice = await ask("Continue with another task? (y/n, default: y): ");
+      if (continueChoice.trim().toLowerCase() === 'n') {
+        break;
+      }
       continue;
     }
     // If failed, repeat task and description input
-    console.log("Please re-enter the task and description/log.");
+    console.log("Task failed. Please try again.\n");
   }
+  
+  console.log("👋 Thanks for using QA AI Agent CLI!");
+  rl.close();
 }
 
 main();
