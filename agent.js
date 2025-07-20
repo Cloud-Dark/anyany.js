@@ -255,7 +255,7 @@ async function main() {
     // Get OpenRouter models
     console.log("Fetching available OpenRouter models...");
     const availableModels = await getOpenRouterModels();
-    
+
     // Daftar model populer dengan prioritas Gemini dan model ekonomis
     const popularModels = [
       { id: 'google/gemini-2.0-flash-001', desc: 'Gemini 2.0 Flash - Latest & Economic 💰' },
@@ -266,23 +266,48 @@ async function main() {
       { id: 'mistralai/mistral-7b-instruct', desc: 'Mistral 7B - European Budget Model 💰' },
       { id: 'openai/gpt-4o-mini', desc: 'GPT-4o Mini - Small but Powerful 💰' },
       { id: 'openai/gpt-4o', desc: 'GPT-4o - Premium Quality 💸' },
-      { id: 'meta-llama/llama-3-70b-instruct', desc: 'Llama 3 70B - Open Source Power 💸' }
+      { id: 'meta-llama/llama-3-70b-instruct', desc: 'Llama 3 70B - Open Source Power 💸' },
+      { id: 'custom', desc: 'Custom Model - Enter your own model ID 🎯' } // Tambahkan opsi custom
     ];
-    
-    // Filter model yang benar-benar tersedia
-    const availablePopularModels = popularModels.filter(model => 
-      availableModels.some(available => available.id === model.id)
+
+    // Filter model yang benar-benar tersedia (kecuali custom)
+    const availablePopularModels = popularModels.filter(model =>
+      model.id === 'custom' || availableModels.some(available => available.id === model.id)
     );
-    
+
     if (availablePopularModels.length > 0) {
       const modelDescriptions = availablePopularModels.map(m => m.desc);
-      const modelIndex = await selectFromList(modelDescriptions, "\nPopular OpenRouter models (💰 = Economic, 💸 = Premium):", 0);
-      submodel = availablePopularModels[modelIndex].id;
+      const modelIndex = await selectFromList(modelDescriptions, "\nPopular OpenRouter models (💰 = Economic, 💸 = Premium, 🎯 = Custom):", 0);
+
+      // Jika pilihan adalah custom model
+      if (availablePopularModels[modelIndex].id === 'custom') {
+        console.log("\nAvailable models from OpenRouter:");
+        if (availableModels.length > 0) {
+          // Tampilkan beberapa contoh model yang tersedia
+          console.log("Some examples:");
+          availableModels.slice(0, 10).forEach((model, index) => {
+            const pricing = model.pricing ? `($${model.pricing.prompt}/${model.pricing.completion})` : '';
+            console.log(`  - ${model.id} ${pricing}`);
+          });
+          if (availableModels.length > 10) {
+            console.log(`  ... and ${availableModels.length - 10} more models`);
+          }
+        }
+
+        submodel = await ask("\nEnter custom model ID (e.g., anthropic/claude-3-haiku): ");
+
+        // Validasi apakah model yang dimasukkan tersedia
+        const isValidModel = availableModels.some(model => model.id === submodel);
+        if (!isValidModel && submodel.trim()) {
+          console.log(`⚠️  Warning: Model '${submodel}' not found in available models list. Proceeding anyway...`);
+        }
+      } else {
+        submodel = availablePopularModels[modelIndex].id;
+      }
     } else {
       console.log("Could not fetch OpenRouter models. Using default Gemini.");
       submodel = 'google/gemini-2.0-flash-001';
     }
-    
   } else if (model === 'openai') {
     // Model OpenAI dengan prioritas model ekonomis
     const openaiModels = [
