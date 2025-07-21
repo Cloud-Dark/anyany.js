@@ -2,10 +2,21 @@
 
 import readline from 'readline';
 import fs from 'fs';
+import path from 'path';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import { spawn } from 'child_process';
 import { PROMPTS } from './prompts.js';
+
+// Optional: untuk markdown to HTML conversion
+// npm install showdown
+let showdown;
+try {
+  showdown = await import('showdown');
+} catch (e) {
+  console.log("Showdown not installed. HTML export will be unavailable.");
+}
+
 dotenv.config();
 
 const rl = readline.createInterface({
@@ -47,6 +58,77 @@ const MODELS = {
       messages: [{ role: 'user', content: input }]
     }),
     extract: (res) => res.choices[0].message.content
+  }
+};
+
+// Export formats
+const EXPORT_FORMATS = {
+  txt: { extension: '.txt', name: 'Plain Text', converter: (content) => content },
+  md: { extension: '.md', name: 'Markdown', converter: (content) => content },
+  json: { 
+    extension: '.json', 
+    name: 'JSON', 
+    converter: (content) => JSON.stringify({ 
+      result: content, 
+      timestamp: new Date().toISOString(),
+      format: 'ai_agent_output' 
+    }, null, 2) 
+  },
+  html: { 
+    extension: '.html', 
+    name: 'HTML', 
+    converter: (content) => {
+      if (showdown) {
+        const converter = new showdown.Converter({
+          tables: true,
+          strikethrough: true,
+          tasklists: true,
+          ghCodeBlocks: true,
+          ghMentions: true
+        });
+        const htmlContent = converter.makeHtml(content);
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Output</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+        pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        code { background: #f0f0f0; padding: 2px 4px; border-radius: 3px; }
+        blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 20px; color: #666; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .timestamp { color: #888; font-size: 0.9em; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    ${htmlContent}
+    <div class="timestamp">Generated: ${new Date().toLocaleString()}</div>
+</body>
+</html>`;
+      } else {
+        // Fallback HTML without markdown conversion
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Output</title>
+    <style>
+        body { font-family: monospace; max-width: 800px; margin: 0 auto; padding: 20px; white-space: pre-wrap; }
+        .timestamp { color: #888; font-size: 0.9em; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+    <div class="timestamp">Generated: ${new Date().toLocaleString()}</div>
+</body>
+</html>`;
+      }
+    }
   }
 };
 
@@ -94,6 +176,109 @@ async function selectFromList(items, prompt, defaultIndex = 0) {
   return selectedIndex;
 }
 
+// Fungsi untuk menampilkan hasil
+function displayResult(result, taskName) {
+  console.log('\n' + '='.repeat(60));
+  console.log(`📋 RESULT: ${taskName.toUpperCase()}`);
+  console.log('='.repeat(60));
+  console.log(result);
+  console.log('='.repeat(60) + '\n');
+}
+
+// Fungsi untuk export hasil
+async function exportResult(result, taskName) {
+  // Pilih aksi output
+  const outputActions = [
+    'Display in Terminal',
+    'Export to File',
+    'Both Display & Export'
+  ];
+  
+  const actionIndex = await selectFromList(outputActions, "\nChoose output action:", 0);
+  const action = outputActions[actionIndex];
+  
+  // Display di terminal jika diperlukan
+  if (action.includes('Display')) {
+    displayResult(result, taskName);
+  }
+  
+  // Export ke file jika diperlukan
+  if (action.includes('Export')) {
+    // Pilih format export
+    const formatNames = Object.entries(EXPORT_FORMATS).map(([key, value]) => 
+      `${value.name} (${value.extension})`
+    );
+    const formatKeys = Object.keys(EXPORT_FORMATS);
+    
+    const formatIndex = await selectFromList(formatNames, "\nChoose export format:", 0);
+    const selectedFormat = formatKeys[formatIndex];
+    const formatConfig = EXPORT_FORMATS[selectedFormat];
+    
+    // Pilih direktori export
+    let exportPath;
+    const useCustomPath = await ask("\nUse custom export path? (y/n, default: n): ");
+    
+    if (useCustomPath.trim().toLowerCase() === 'y') {
+      exportPath = await ask("Enter export directory path (e.g., ./exports, /home/user/documents): ");
+      // Buat direktori jika tidak ada
+      try {
+        fs.mkdirSync(exportPath, { recursive: true });
+      } catch (error) {
+        console.log(`⚠️  Could not create directory: ${error.message}`);
+        exportPath = './output'; // fallback
+      }
+    } else {
+      exportPath = './output';
+      // Pastikan direktori output ada
+      if (!fs.existsSync(exportPath)) {
+        fs.mkdirSync(exportPath, { recursive: true });
+      }
+    }
+    
+    // Generate nama file
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
+    const fileName = `${taskName.replace(/\s+/g, '_')}_${timestamp}${formatConfig.extension}`;
+    const fullPath = path.join(exportPath, fileName);
+    
+    try {
+      // Konversi content sesuai format
+      const convertedContent = formatConfig.converter(result);
+      
+      // Tulis file
+      fs.writeFileSync(fullPath, convertedContent, 'utf8');
+      console.log(`\n✅ File exported successfully!`);
+      console.log(`📁 Location: ${fullPath}`);
+      console.log(`📄 Format: ${formatConfig.name}`);
+      console.log(`📏 Size: ${fs.statSync(fullPath).size} bytes\n`);
+      
+      // Tanya apakah ingin membuka file (hanya untuk sistem yang mendukung)
+      const openFile = await ask("Open the file? (y/n, default: n): ");
+      if (openFile.trim().toLowerCase() === 'y') {
+        const { spawn } = await import('child_process');
+        const platform = process.platform;
+        
+        let cmd;
+        if (platform === 'darwin') cmd = 'open';
+        else if (platform === 'win32') cmd = 'start';
+        else cmd = 'xdg-open';
+        
+        try {
+          spawn(cmd, [fullPath], { detached: true, stdio: 'ignore' });
+          console.log(`🚀 Opening file with default application...\n`);
+        } catch (error) {
+          console.log(`⚠️  Could not open file automatically: ${error.message}\n`);
+        }
+      }
+      
+    } catch (error) {
+      console.log(`❌ Export failed: ${error.message}\n`);
+      return false;
+    }
+  }
+  
+  return true;
+}
+
 async function runAgent(modelName, task, inputText, submodel) {
   const model = MODELS[modelName];
   if (!model) throw new Error(`Model ${modelName} not supported.`);
@@ -101,7 +286,6 @@ async function runAgent(modelName, task, inputText, submodel) {
   // Loading spinner animation
   const spinnerFrames = ['|', '/', '-', '\\'];
   let spinnerIndex = 0;
-  let spinnerActive = true;
   process.stdout.write('⏳ Processing');
   const spinner = setInterval(() => {
     process.stdout.write(`\r⏳ Processing ${spinnerFrames[spinnerIndex++ % spinnerFrames.length]}`);
@@ -160,16 +344,13 @@ async function runAgent(modelName, task, inputText, submodel) {
   }
   clearInterval(spinner);
   process.stdout.write('\r');
-  spinnerActive = false;
 
   if (errorMsg) {
     console.log(`\n❌ Task failed: ${errorMsg}\n`);
-    return false;
+    return { success: false, result: null };
   }
-  const outputFile = `output/${task.replace(/\s+/g, '_')}.txt`;
-  fs.writeFileSync(outputFile, result);
-  console.log(`\n✅ Output saved to: ${outputFile}\n`);
-  return true;
+
+  return { success: true, result: result };
 }
 
 // Check if Ollama server is running
@@ -203,7 +384,12 @@ async function waitForOllamaReady(timeout = 15000) {
 }
 
 async function main() {
-  console.log("🔧 QA AI Agent CLI");
+  console.log("🔧 QA AI Agent CLI v2.0 - Enhanced with Export Features");
+  
+  // Cek apakah showdown tersedia untuk HTML export
+  if (!showdown) {
+    console.log("💡 Tip: Install 'showdown' package for better HTML export: npm install showdown");
+  }
   
   // Pilih model provider dengan nomor
   const modelProviders = ['OpenAI', 'Ollama (Local)', 'OpenRouter'];
@@ -267,7 +453,7 @@ async function main() {
       { id: 'openai/gpt-4o-mini', desc: 'GPT-4o Mini - Small but Powerful 💰' },
       { id: 'openai/gpt-4o', desc: 'GPT-4o - Premium Quality 💸' },
       { id: 'meta-llama/llama-3-70b-instruct', desc: 'Llama 3 70B - Open Source Power 💸' },
-      { id: 'custom', desc: 'Custom Model - Enter your own model ID 🎯' } // Tambahkan opsi custom
+      { id: 'custom', desc: 'Custom Model - Enter your own model ID 🎯' }
     ];
 
     // Filter model yang benar-benar tersedia (kecuali custom)
@@ -350,9 +536,14 @@ async function main() {
     // Combine prompt instruction with user input if special instruction exists
     const inputText = selectedTask.prompt ? `${selectedTask.prompt}\n\n${inputTextUser}` : inputTextUser;
     
-    const success = await runAgent(model, selectedTask.key, inputText, submodel);
+    const { success, result } = await runAgent(model, selectedTask.key, inputText, submodel);
+    
     if (success) {
-      console.log("Task completed successfully!\n");
+      console.log("\n✅ Task completed successfully!");
+      
+      // Handle output dengan opsi tampil/export
+      await exportResult(result, selectedTask.name);
+      
       const continueChoice = await ask("Continue with another task? (y/n, default: y): ");
       if (continueChoice.trim().toLowerCase() === 'n') {
         break;
