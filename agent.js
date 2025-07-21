@@ -795,6 +795,46 @@ async function loadOllamaModels() {
 }
 
 // =====================
+// ENSURE OLLAMA RUNNING
+// =====================
+async function ensureOllamaRunning() {
+  const isRunning = await fetch('http://localhost:11434/api/tags')
+    .then(res => res.ok)
+    .catch(() => false);
+
+  if (isRunning) {
+    console.log('✅ Ollama is already running');
+    return;
+  }
+
+  console.log('🚀 Starting Ollama server...');
+  const ollamaProcess = spawn('ollama', ['serve'], {
+    detached: true,
+    stdio: 'ignore',
+    shell: true
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 3000)); // wait 3s before checking
+
+  const maxRetries = 5;
+  let ready = false;
+
+  for (let i = 0; i < maxRetries; i++) {
+    ready = await fetch('http://localhost:11434/api/tags')
+      .then(res => res.ok)
+      .catch(() => false);
+    if (ready) break;
+    await new Promise(resolve => setTimeout(resolve, 1000)); // wait 1s each retry
+  }
+
+  if (ready) {
+    console.log('✅ Ollama is now running');
+  } else {
+    console.log('❌ Failed to start Ollama automatically. Please run "ollama serve" manually.');
+  }
+}
+
+// =====================
 // MAIN APPLICATION
 // =====================
 async function main() {
@@ -802,6 +842,8 @@ async function main() {
   console.log('='.repeat(60));
   console.log('🎯 Multi-Model | 🤖 Multi-Agent | 📊 Session Management');
   console.log('='.repeat(60));
+
+  await ensureOllamaRunning();
 
   // Initialize session manager
   const sessionManager = new SessionManager();
@@ -820,7 +862,7 @@ async function main() {
       const mainMenu = [
         '🔥 Quick Query',
         '🤖 Multi-Agent Mode',
-        '⚙️  Custom Task',
+        '⚙️ Custom Task',
         '💾 Session Management',
         '⚡ Batch Processing',
         '❌ Exit'
@@ -850,7 +892,7 @@ async function main() {
           break;
           
         case 5: // Exit (sebelumnya case 6)
-          console.log('\n👋 Thank you for using Enhanced QA AI Agent CLI!');
+          console.log('\n👋 Thank you for using Anyany.js, QA AI Agent CLI!');
           process.exit(0);
           
         default:
@@ -1089,8 +1131,8 @@ async function handleSessionManagement(sessionManager) {
     '🔄 Load Session',
     '✨ New Session',
     '📊 Session Statistics',
-    '🗑️  Delete Session',
-    '⬅️  Back to Main Menu'
+    '🗑️ Delete Session',
+    '⬅️ Back to Main Menu'
   ];
 
   const actionIndex = await selectFromList(sessionActions, "Session Management:", 0, true);
@@ -1231,7 +1273,7 @@ async function handleBatchProcessing(sessionManager) {
     '📁 File Input (JSON/TXT)',
     '📝 Manual Input (Multiple Queries)',
     '🔄 Repeat Query with Different Models',
-    '⬅️  Back to Main Menu'
+    '⬅️ Back to Main Menu'
   ];
 
   const modeIndex = await selectFromList(batchModes, "Choose batch mode:", 0, true);
@@ -1478,7 +1520,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 process.on('SIGINT', () => {
   console.log('\n\n👋 Gracefully shutting down...');
   console.log('💾 Sessions saved automatically');
-  console.log('✨ Thank you for using Enhanced QA AI Agent CLI!');
+  console.log('✨ Thank you for using Anyany.js, QA AI Agent CLI!');
   rl.close();
   process.exit(0);
 });
@@ -1521,7 +1563,7 @@ ${'='.repeat(60)}
 FEATURES:
 - 🔥 Quick Query - Fast single questions
 - 🤖 Multi-Agent Mode - Collaborative AI analysis
-- ⚙️  Custom Tasks - Specialized prompts
+- ⚙️ Custom Tasks - Specialized prompts
 - 💾 Session Management - Persistent conversations
 - ⚡ Batch Processing - Multiple queries at once
 
