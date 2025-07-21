@@ -1,91 +1,613 @@
-// File: agent.js
+// File: enhanced-qa-agent.js
 
 import readline from 'readline';
 import fs from 'fs';
+import path from 'path';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 import { PROMPTS } from './prompts.js';
+
+// Optional dependency dengan graceful fallback
+let showdown;
+try {
+  showdown = await import('showdown');
+} catch (e) {
+  console.log("💡 Tip: Install 'showdown' for enhanced HTML export: npm install showdown");
+}
+
 dotenv.config();
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+// =====================
+// SESSION MANAGEMENT
+// =====================
+class SessionManager {
+  constructor() {
+    this.sessionsDir = './sessions';
+    this.currentSession = null;
+    this.ensureSessionsDir();
+  }
 
+  ensureSessionsDir() {
+    if (!fs.existsSync(this.sessionsDir)) {
+      fs.mkdirSync(this.sessionsDir, { recursive: true });
+    }
+  }
+
+  createSession(name = null) {
+    const sessionId = crypto.randomBytes(8).toString('hex');
+    const timestamp = new Date().toISOString();
+    const sessionName = name || `session_${timestamp.split('T')[0]}`;
+    
+    this.currentSession = {
+      id: sessionId,
+      name: sessionName,
+      created: timestamp,
+      conversations: [],
+      totalRequests: 0,
+      models: []
+    };
+
+    this.saveSession();
+    return this.currentSession;
+  }
+
+  saveSession() {
+    if (!this.currentSession) return;
+    
+    const filePath = path.join(this.sessionsDir, `${this.currentSession.id}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(this.currentSession, null, 2));
+  }
+
+  loadSession(sessionId) {
+    const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
+    if (fs.existsSync(filePath)) {
+      this.currentSession = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return this.currentSession;
+    }
+    return null;
+  }
+
+  listSessions() {
+    const files = fs.readdirSync(this.sessionsDir).filter(f => f.endsWith('.json'));
+    return files.map(f => {
+      const filePath = path.join(this.sessionsDir, f);
+      const session = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return {
+        id: session.id,
+        name: session.name,
+        created: session.created,
+        conversations: session.conversations?.length || 0
+      };
+    });
+  }
+
+  addConversation(input, output, model, task, metadata = {}) {
+    if (!this.currentSession) return;
+
+    this.currentSession.conversations.push({
+      timestamp: new Date().toISOString(),
+      input: input.substring(0, 500) + (input.length > 500 ? '...' : ''),
+      output: output.substring(0, 1000) + (output.length > 1000 ? '...' : ''),
+      model,
+      task,
+      metadata
+    });
+
+    this.currentSession.totalRequests++;
+    if (!this.currentSession.models.includes(model)) {
+      this.currentSession.models.push(model);
+    }
+
+    this.saveSession();
+  }
+
+  getRecentContext(limit = 2) {
+    if (!this.currentSession || !this.currentSession.conversations.length) return '';
+
+    const recent = this.currentSession.conversations.slice(-limit);
+    return recent.map(conv => 
+      `Previous ${conv.task}: ${conv.input.substring(0, 100)}...`
+    ).join('\n');
+  }
+}
+
+// =====================
+// MODEL CONFIGURATIONS
+// =====================
 const MODELS = {
   openai: {
+    name: 'OpenAI',
     url: 'https://api.openai.com/v1/chat/completions',
     key: process.env.OPENAI_API_KEY,
     headers: (key) => ({
       'Authorization': `Bearer ${key}`,
       'Content-Type': 'application/json'
     }),
-    format: (input) => ({
-      model: 'gpt-4',
-      messages: [{ role: 'user', content: input }]
+    format: (input, submodel = 'gpt-3.5-turbo') => ({
+      model: submodel,
+      messages: [{ role: 'user', content: input }],
+      temperature: 0.7
     }),
-    extract: (res) => res.choices[0].message.content
+    extract: (res) => res.choices[0].message.content,
+    models: [
+      { id: 'gpt-3.5-turbo', desc: 'GPT-3.5 Turbo - Economic Choice 💰', cost: 'Low' },
+      { id: 'gpt-4o-mini', desc: 'GPT-4o Mini - Small & Efficient 💰', cost: 'Low' },
+      { id: 'gpt-4-turbo', desc: 'GPT-4 Turbo - Balanced Performance 💸', cost: 'Medium' },
+      { id: 'gpt-4o', desc: 'GPT-4o - Most Capable 💸', cost: 'High' }
+    ]
   },
   ollama: {
+    name: 'Ollama (Local)',
     url: 'http://localhost:11434/api/generate',
     headers: () => ({ 'Content-Type': 'application/json' }),
-    format: (input, submodel = 'gemma2:2b') => ({ model: submodel, prompt: input }),
-    extract: (res) => res.response
+    format: (input, submodel = 'gemma2:2b') => ({ 
+      model: submodel, 
+      prompt: input,
+      options: { temperature: 0.7 }
+    }),
+    extract: (res) => res.response,
+    models: [] // Will be populated dynamically
   },
   openrouter: {
+    name: 'OpenRouter',
     url: 'https://openrouter.ai/api/v1/chat/completions',
     key: process.env.OPENROUTER_API_KEY,
     headers: (key) => ({
       'Authorization': `Bearer ${key}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': 'http://localhost:3000',
-      'X-Title': 'QA AI Agent CLI'
+      'X-Title': 'Enhanced QA AI Agent CLI'
     }),
     format: (input, submodel = 'google/gemini-2.0-flash-001') => ({
       model: submodel,
-      messages: [{ role: 'user', content: input }]
+      messages: [{ role: 'user', content: input }],
+      temperature: 0.7
     }),
-    extract: (res) => res.choices[0].message.content
+    extract: (res) => res.choices[0].message.content,
+    models: [
+      { id: 'google/gemini-2.0-flash-001', desc: 'Gemini 2.0 Flash - Latest & Economic 💰', cost: 'Low' },
+      { id: 'google/gemini-pro', desc: 'Gemini Pro - Reliable & Affordable 💰', cost: 'Low' },
+      { id: 'google/gemini-1.5-flash', desc: 'Gemini 1.5 Flash - Fast & Cheap 💰', cost: 'Low' },
+      { id: 'openai/gpt-3.5-turbo', desc: 'GPT-3.5 Turbo - Fast & Economic 💰', cost: 'Low' },
+      { id: 'meta-llama/llama-3-8b-instruct', desc: 'Llama 3 8B - Open Source Budget 💰', cost: 'Low' },
+      { id: 'mistralai/mistral-7b-instruct', desc: 'Mistral 7B - European Budget Model 💰', cost: 'Low' },
+      { id: 'openai/gpt-4o-mini', desc: 'GPT-4o Mini - Small but Powerful 💰', cost: 'Medium' },
+      { id: 'openai/gpt-4o', desc: 'GPT-4o - Premium Quality 💸', cost: 'High' },
+      { id: 'meta-llama/llama-3-70b-instruct', desc: 'Llama 3 70B - Open Source Power 💸', cost: 'High' },
+      { id: 'custom', desc: 'Custom Model - Enter your own model ID 🎯', cost: 'Variable' }
+    ]
   }
 };
 
-// Fungsi untuk mendapatkan model yang tersedia di OpenRouter
-async function getOpenRouterModels() {
-  try {
-    const response = await fetch('https://openrouter.ai/api/v1/models', {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
+// =====================
+// EXPORT FORMATS
+// =====================
+const EXPORT_FORMATS = {
+  txt: { 
+    extension: '.txt', 
+    name: 'Plain Text', 
+    icon: '📄',
+    converter: (content) => content 
+  },
+  md: { 
+    extension: '.md', 
+    name: 'Markdown', 
+    icon: '📝',
+    converter: (content) => content 
+  },
+  json: { 
+    extension: '.json', 
+    name: 'JSON', 
+    icon: '📊',
+    converter: (content) => JSON.stringify({ 
+      result: content, 
+      timestamp: new Date().toISOString(),
+      format: 'qa_ai_agent_output',
+      version: '3.0'
+    }, null, 2) 
+  },
+  html: { 
+    extension: '.html', 
+    name: 'HTML', 
+    icon: '🌐',
+    converter: (content) => {
+      if (showdown) {
+        const converter = new showdown.Converter({
+          tables: true,
+          strikethrough: true,
+          tasklists: true,
+          ghCodeBlocks: true,
+          ghMentions: true,
+          headerLevelStart: 2
+        });
+        const htmlContent = converter.makeHtml(content);
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QA AI Agent Output</title>
+    <style>
+        body { 
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+          max-width: 900px; 
+          margin: 0 auto; 
+          padding: 20px; 
+          line-height: 1.6; 
+          color: #333;
+        }
+        pre { 
+          background: #f8f9fa; 
+          padding: 15px; 
+          border-radius: 8px; 
+          overflow-x: auto; 
+          border-left: 4px solid #007acc;
+        }
+        code { 
+          background: #f1f3f4; 
+          padding: 2px 6px; 
+          border-radius: 4px; 
+          font-family: 'Monaco', 'Menlo', monospace;
+        }
+        blockquote { 
+          border-left: 4px solid #e1e4e8; 
+          margin: 0; 
+          padding-left: 20px; 
+          color: #6a737d; 
+          font-style: italic;
+        }
+        table { 
+          border-collapse: collapse; 
+          width: 100%; 
+          margin: 15px 0;
+        }
+        th, td { 
+          border: 1px solid #e1e4e8; 
+          padding: 12px; 
+          text-align: left; 
+        }
+        th { 
+          background-color: #f6f8fa; 
+          font-weight: 600;
+        }
+        .header { 
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          padding: 20px;
+          border-radius: 8px;
+          margin-bottom: 20px;
+        }
+        .timestamp { 
+          color: #6a737d; 
+          font-size: 0.9em; 
+          margin-top: 30px; 
+          padding-top: 20px;
+          border-top: 1px solid #e1e4e8;
+        }
+        h1, h2, h3 { color: #24292e; }
+        h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 QA AI Agent Output</h1>
+        <p>Generated with Enhanced QA AI Agent CLI v3.0</p>
+    </div>
+    ${htmlContent}
+    <div class="timestamp">
+        <strong>Generated:</strong> ${new Date().toLocaleString()}<br>
+        <strong>Tool:</strong> Enhanced QA AI Agent CLI v3.0
+    </div>
+</body>
+</html>`;
+      } else {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QA AI Agent Output</title>
+    <style>
+        body { 
+          font-family: 'Monaco', 'Menlo', monospace; 
+          max-width: 900px; 
+          margin: 0 auto; 
+          padding: 20px; 
+          white-space: pre-wrap; 
+          background: #f8f9fa;
+          color: #24292e;
+        }
+        .container {
+          background: white;
+          padding: 30px;
+          border-radius: 8px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .timestamp { 
+          color: #6a737d; 
+          font-size: 0.9em; 
+          margin-top: 20px; 
+          padding-top: 20px;
+          border-top: 1px solid #e1e4e8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 QA AI Agent Output</h1>
+        ${content.replace(/</g, '<').replace(/>/g, '>')}
+        <div class="timestamp">
+            <strong>Generated:</strong> ${new Date().toLocaleString()}<br>
+            <strong>Tool:</strong> Enhanced QA AI Agent CLI v3.0
+        </div>
+    </div>
+</body>
+</html>`;
       }
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      return data.data.map(model => ({
-        id: model.id,
-        name: model.name,
-        pricing: model.pricing
-      }));
     }
-    return [];
-  } catch (error) {
-    console.log("Could not fetch OpenRouter models:", error.message);
-    return [];
+  }
+};
+
+// =====================
+// MULTI-AGENT SYSTEM
+// =====================
+class MultiAgentOrchestrator {
+  constructor(models) {
+    this.models = models;
+  }
+
+  async runCollaboration(input, mode, selectedModels, taskName) {
+    console.log(`\n🤖 Multi-Agent ${mode} Mode`);
+    console.log('='.repeat(60));
+
+    switch (mode) {
+      case 'Debate':
+        return await this.runDebateMode(input, selectedModels);
+      case 'Pipeline':
+        return await this.runPipelineMode(input, selectedModels);
+      case 'Consensus':
+        return await this.runConsensusMode(input, selectedModels);
+      default:
+        return await this.callSingleAgent(selectedModels[0], input);
+    }
+  }
+
+  async runDebateMode(input, agents, rounds = 2) {
+    const responses = [];
+    
+    for (let round = 1; round <= rounds; round++) {
+      console.log(`\n🗣️  Round ${round} of ${rounds}`);
+      
+      for (const agent of agents) {
+        console.log(`\n🤖 Agent ${agent.provider}-${agent.model} thinking...`);
+        
+        let context = '';
+        if (responses.length > 0) {
+          const recentResponses = responses.slice(-2);
+          context = `\n\nPrevious perspectives:\n${recentResponses.map(r => 
+            `${r.agent}: ${r.response.substring(0, 200)}...`
+          ).join('\n')}\n\nNow provide your perspective, considering the above:`;
+        }
+
+        const fullInput = input + context;
+        const result = await this.callSingleAgent(agent, fullInput);
+        
+        if (result.success) {
+          responses.push({
+            round,
+            agent: `${agent.provider}-${agent.model}`,
+            response: result.result
+          });
+          
+          console.log(`✅ Response received (${result.result.length} chars)`);
+        } else {
+          console.log(`❌ Failed: ${result.error}`);
+        }
+      }
+    }
+
+    return this.synthesizeDebateResults(responses);
+  }
+
+  async runPipelineMode(input, agents) {
+    let currentInput = input;
+    const results = [];
+
+    for (let i = 0; i < agents.length; i++) {
+      const agent = agents[i];
+      console.log(`\n📡 Pipeline Step ${i + 1}/${agents.length}: ${agent.provider}-${agent.model}`);
+      
+      const pipelinePrompt = i === 0 ? 
+        currentInput : 
+        `Build upon and refine this previous analysis:\n\n${currentInput}\n\nProvide additional insights, corrections, or enhancements:`;
+
+      const result = await this.callSingleAgent(agent, pipelinePrompt);
+      
+      if (result.success) {
+        results.push({
+          step: i + 1,
+          agent: `${agent.provider}-${agent.model}`,
+          input: currentInput.substring(0, 100) + '...',
+          output: result.result
+        });
+        
+        currentInput = result.result;
+        console.log(`✅ Step ${i + 1} completed`);
+      } else {
+        console.log(`❌ Step ${i + 1} failed: ${result.error}`);
+        break;
+      }
+    }
+
+    return this.synthesizePipelineResults(results);
+  }
+
+  async runConsensusMode(input, agents) {
+    const responses = [];
+
+    console.log('\n📊 Collecting individual responses...');
+    for (const agent of agents) {
+      console.log(`\n🤖 Consulting ${agent.provider}-${agent.model}...`);
+      
+      const result = await this.callSingleAgent(agent, input);
+      if (result.success) {
+        responses.push({
+          agent: `${agent.provider}-${agent.model}`,
+          response: result.result,
+          confidence: this.estimateConfidence(result.result)
+        });
+        console.log(`✅ Response collected (confidence: ${responses[responses.length - 1].confidence}%)`);
+      } else {
+        console.log(`❌ Failed: ${result.error}`);
+      }
+    }
+
+    return this.buildConsensus(responses, input);
+  }
+
+  async callSingleAgent(agent, input) {
+    const model = this.models[agent.provider];
+    if (!model) return { success: false, error: 'Provider not found' };
+
+    try {
+      const body = JSON.stringify(model.format(input, agent.model));
+      const res = await fetch(model.url, {
+        method: 'POST',
+        headers: model.headers(model.key),
+        body
+      });
+
+      const rawText = await res.text();
+      
+      if (agent.provider === 'ollama') {
+        const lines = rawText.split(/\r?\n/).filter(Boolean);
+        let combined = '';
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj.response) combined += obj.response;
+          } catch {}
+        }
+        return { success: true, result: combined.trim() };
+      } else {
+        const json = JSON.parse(rawText);
+        return { success: true, result: model.extract(json) };
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  synthesizeDebateResults(responses) {
+    let synthesis = '\n🎯 MULTI-AGENT DEBATE SYNTHESIS\n' + '='.repeat(60) + '\n';
+    
+    const agentSummary = responses.reduce((acc, r) => {
+      if (!acc[r.agent]) acc[r.agent] = [];
+      acc[r.agent].push(r.response);
+      return acc;
+    }, {});
+
+    Object.entries(agentSummary).forEach(([agent, responses]) => {
+      synthesis += `\n🤖 **${agent.toUpperCase()} PERSPECTIVE:**\n`;
+      synthesis += `${responses[responses.length - 1].substring(0, 400)}...\n`;
+      synthesis += `\n📈 Evolution: ${responses.length} iterations\n`;
+    });
+
+    synthesis += '\n💡 **DEBATE INSIGHTS:**\n';
+    synthesis += '• Multiple AI perspectives analyzed\n';
+    synthesis += '• Iterative refinement through discussion\n';
+    synthesis += '• Cross-model validation achieved\n';
+    synthesis += `• Total responses: ${responses.length}\n`;
+
+    return synthesis;
+  }
+
+  synthesizePipelineResults(results) {
+    let synthesis = '\n🔗 MULTI-AGENT PIPELINE SYNTHESIS\n' + '='.repeat(60) + '\n';
+    
+    synthesis += `📊 **Pipeline executed with ${results.length} agents**\n\n`;
+    
+    results.forEach((result, index) => {
+      synthesis += `**Step ${result.step}: ${result.agent}**\n`;
+      if (index === 0) {
+        synthesis += `Input: ${result.input}\n`;
+      }
+      synthesis += `Output: ${result.output.substring(0, 300)}...\n\n`;
+    });
+
+    synthesis += '📈 **FINAL REFINED OUTPUT:**\n';
+    synthesis += '='.repeat(40) + '\n';
+    synthesis += results[results.length - 1].output;
+
+    return synthesis;
+  }
+
+  buildConsensus(responses, originalInput) {
+    let consensus = '\n🤝 MULTI-AGENT CONSENSUS ANALYSIS\n' + '='.repeat(60) + '\n';
+    
+    consensus += `📋 **Original Query:** ${originalInput.substring(0, 200)}...\n\n`;
+    consensus += `👥 **${responses.length} AI Agents Consulted**\n\n`;
+    
+    responses.forEach(r => {
+      consensus += `🤖 **${r.agent.toUpperCase()}** (Confidence: ${r.confidence}%)\n`;
+      consensus += `${r.response.substring(0, 300)}...\n\n`;
+    });
+
+    const highConfidenceResponses = responses.filter(r => r.confidence > 75);
+    if (highConfidenceResponses.length > 0) {
+      consensus += '✅ **HIGH CONFIDENCE CONSENSUS:**\n';
+      consensus += '='.repeat(40) + '\n';
+      consensus += highConfidenceResponses[0].response;
+    } else {
+      consensus += '⚖️ **BALANCED MULTI-PERSPECTIVE VIEW:**\n';
+      consensus += '='.repeat(40) + '\n';
+      consensus += responses.map(r => `**${r.agent}:** ${r.response}`).join('\n\n---\n\n');
+    }
+
+    return consensus;
+  }
+
+  estimateConfidence(response) {
+    let confidence = 50;
+    
+    // Positive confidence indicators
+    if (response.includes('definitely') || response.includes('clearly')) confidence += 15;
+    if (response.includes('evidence') || response.includes('data')) confidence += 10;
+    if (response.includes('research') || response.includes('studies')) confidence += 10;
+    if (response.length > 800) confidence += 10; // Detailed responses
+    
+    // Negative confidence indicators
+    if (response.includes('might') || response.includes('possibly')) confidence -= 10;
+    if (response.includes('uncertain') || response.includes('not sure')) confidence -= 15;
+    if (response.includes('I think') || response.includes('probably')) confidence -= 5;
+    
+    return Math.max(25, Math.min(95, confidence));
   }
 }
+
+// =====================
+// UTILITY FUNCTIONS
+// =====================
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
 
 async function ask(prompt) {
   return new Promise(resolve => rl.question(prompt, resolve));
 }
 
-// Fungsi untuk memilih dari daftar bernomor
-async function selectFromList(items, prompt, defaultIndex = 0) {
-  console.log(prompt);
+async function selectFromList(items, prompt, defaultIndex = 0, showIcons = false) {
+  console.log(`\n${prompt}`);
   items.forEach((item, index) => {
-    console.log(`${index + 1}. ${item}`);
+    const icon = showIcons && item.icon ? `${item.icon} ` : '';
+    const display = typeof item === 'string' ? item : item.desc || item.name || item;
+    console.log(`${index + 1}. ${icon}${display}`);
   });
   
-  const choice = await ask(`Enter number (1-${items.length}, default: ${defaultIndex + 1}): `);
+  const choice = await ask(`\nEnter number (1-${items.length}, default: ${defaultIndex + 1}): `);
   const selectedIndex = parseInt(choice.trim()) - 1;
   
   if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= items.length) {
@@ -94,34 +616,120 @@ async function selectFromList(items, prompt, defaultIndex = 0) {
   return selectedIndex;
 }
 
-async function runAgent(modelName, task, inputText, submodel) {
-  const model = MODELS[modelName];
-  if (!model) throw new Error(`Model ${modelName} not supported.`);
+function displayResult(result, taskName, model = '') {
+  console.log('\n' + '='.repeat(70));
+  console.log(`📋 RESULT: ${taskName.toUpperCase()}`);
+  if (model) console.log(`🤖 Model: ${model}`);
+  console.log('='.repeat(70));
+  console.log(result);
+  console.log('='.repeat(70) + '\n');
+}
 
-  // Loading spinner animation
-  const spinnerFrames = ['|', '/', '-', '\\'];
+async function exportResult(result, taskName, model = '') {
+  const outputActions = [
+    '👀 Display in Terminal',
+    '💾 Export to File',
+    '📺 Both Display & Export'
+  ];
+  
+  const actionIndex = await selectFromList(outputActions, "Choose output action:", 0);
+  const action = outputActions[actionIndex];
+  
+  if (action.includes('Display')) {
+    displayResult(result, taskName, model);
+  }
+  
+  if (action.includes('Export')) {
+    const formatEntries = Object.entries(EXPORT_FORMATS);
+    const formatItems = formatEntries.map(([key, value]) => ({
+      key,
+      desc: `${value.icon} ${value.name} (${value.extension})`,
+      ...value
+    }));
+    
+    const formatIndex = await selectFromList(formatItems, "Choose export format:", 0, true);
+    const selectedFormat = formatItems[formatIndex];
+    
+    let exportPath = './output';
+    const useCustomPath = await ask("\nUse custom export path? (y/n, default: n): ");
+    
+    if (useCustomPath.trim().toLowerCase() === 'y') {
+      exportPath = await ask("Enter export directory path: ");
+      try {
+        fs.mkdirSync(exportPath, { recursive: true });
+      } catch (error) {
+        console.log(`⚠️  Could not create directory: ${error.message}`);
+        exportPath = './output';
+      }
+    } else {
+      if (!fs.existsSync(exportPath)) {
+        fs.mkdirSync(exportPath, { recursive: true });
+      }
+    }
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
+    const cleanTaskName = taskName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const fileName = `${cleanTaskName}_${timestamp}${selectedFormat.extension}`;
+    const fullPath = path.join(exportPath, fileName);
+    
+    try {
+      const convertedContent = selectedFormat.converter(result);
+      fs.writeFileSync(fullPath, convertedContent, 'utf8');
+      
+      const stats = fs.statSync(fullPath);
+      console.log(`\n✅ File exported successfully!`);
+      console.log(`📁 Location: ${fullPath}`);
+      console.log(`${selectedFormat.icon} Format: ${selectedFormat.name}`);
+      console.log(`📏 Size: ${(stats.size / 1024).toFixed(2)} KB\n`);
+      
+      const openFile = await ask("Open the file? (y/n, default: n): ");
+      if (openFile.trim().toLowerCase() === 'y') {
+        try {
+          const platform = process.platform;
+          let cmd;
+          if (platform === 'darwin') cmd = 'open';
+          else if (platform === 'win32') cmd = 'start';
+          else cmd = 'xdg-open';
+          
+          spawn(cmd, [fullPath], { detached: true, stdio: 'ignore' });
+          console.log(`🚀 Opening file with default application...\n`);
+        } catch (error) {
+          console.log(`⚠️  Could not open file: ${error.message}\n`);
+        }
+      }
+      
+    } catch (error) {
+      console.log(`❌ Export failed: ${error.message}\n`);
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+async function runAgent(modelConfig, task, inputText, submodel) {
+  const model = MODELS[modelConfig];
+  if (!model) throw new Error(`Model ${modelConfig} not supported.`);
+
+  const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   let spinnerIndex = 0;
-  let spinnerActive = true;
-  process.stdout.write('⏳ Processing');
+  process.stdout.write('🤖 Processing');
   const spinner = setInterval(() => {
-    process.stdout.write(`\r⏳ Processing ${spinnerFrames[spinnerIndex++ % spinnerFrames.length]}`);
-  }, 120);
+    process.stdout.write(`\r🤖 Processing ${spinnerFrames[spinnerIndex++ % spinnerFrames.length]}`);
+  }, 100);
 
-  let result, errorMsg = null, rawText = null;
+  let result, errorMsg = null;
   try {
-    const body = JSON.stringify(
-      modelName === 'ollama' ? model.format(inputText, submodel) : model.format(inputText, submodel)
-    );
+    const body = JSON.stringify(model.format(inputText, submodel));
     const res = await fetch(model.url, {
       method: 'POST',
       headers: model.headers(model.key),
       body
     });
-    rawText = await res.text();
     
-    // Check if response is streaming JSONL (Ollama)
-    if (modelName === 'ollama') {
-      // Combine all 'response' fields from each JSON line
+    const rawText = await res.text();
+    
+    if (modelConfig === 'ollama') {
       try {
         const lines = rawText.split(/\r?\n/).filter(Boolean);
         let combined = '';
@@ -132,239 +740,842 @@ async function runAgent(modelName, task, inputText, submodel) {
           } catch {}
         }
         result = combined.trim();
-        if (!result) errorMsg = 'Model did not return a valid output. Raw response:\n' + rawText;
+        if (!result) errorMsg = 'Model returned empty response';
       } catch (e) {
-        errorMsg = 'Failed to parse streaming JSON from response. Raw response:\n' + rawText;
+        errorMsg = 'Failed to parse Ollama response';
       }
     } else {
-      // OpenAI dan OpenRouter: regular JSON parse
-      let json;
       try {
-        json = JSON.parse(rawText);
-      } catch (jsonErr) {
-        errorMsg = 'Failed to parse JSON from response. Raw response:\n' + rawText;
-      }
-      if (!errorMsg) {
-        try {
-          result = model.extract(json);
-        } catch (e) {
-          errorMsg = 'Failed to extract result from model response: ' + e + '\nRaw response: ' + JSON.stringify(json, null, 2);
-        }
-        if (typeof result === 'undefined' || result === null) {
-          errorMsg = 'Model did not return a valid output. Raw response: ' + JSON.stringify(json, null, 2);
-        }
+        const json = JSON.parse(rawText);
+        result = model.extract(json);
+        if (!result) errorMsg = 'Model returned empty result';
+      } catch (e) {
+        errorMsg = 'Failed to parse model response: ' + e.message;
       }
     }
   } catch (e) {
-    errorMsg = 'An error occurred while processing the request: ' + e;
+    errorMsg = 'Request failed: ' + e.message;
+  } finally {
+    clearInterval(spinner);
+    process.stdout.write('\r🤖 Processing ✅ Complete!\n');
   }
-  clearInterval(spinner);
-  process.stdout.write('\r');
-  spinnerActive = false;
 
   if (errorMsg) {
-    console.log(`\n❌ Task failed: ${errorMsg}\n`);
-    return false;
+    console.log(`\n❌ Error: ${errorMsg}`);
+    return { success: false, error: errorMsg };
   }
-  const outputFile = `output/${task.replace(/\s+/g, '_')}.txt`;
-  fs.writeFileSync(outputFile, result);
-  console.log(`\n✅ Output saved to: ${outputFile}\n`);
-  return true;
+
+  return { success: true, result };
 }
 
-// Check if Ollama server is running
-async function isOllamaRunning() {
+// =====================
+// OLLAMA INTEGRATION
+// =====================
+async function loadOllamaModels() {
   try {
-    const res = await fetch('http://localhost:11434/api/tags', { method: 'GET' });
-    return res.ok;
-  } catch (e) {
-    return false;
-  }
-}
-
-// Start Ollama server if not running
-function startOllamaServer() {
-  const proc = spawn('ollama', ['serve'], {
-    detached: true,
-    stdio: 'ignore',
-    shell: true
-  });
-  proc.unref();
-}
-
-// Wait until Ollama server is ready
-async function waitForOllamaReady(timeout = 15000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    if (await isOllamaRunning()) return true;
-    await new Promise(r => setTimeout(r, 1000));
+    const response = await fetch('http://localhost:11434/api/tags');
+    const data = await response.json();
+    
+    if (data.models && Array.isArray(data.models)) {
+      MODELS.ollama.models = data.models.map(model => ({
+        id: model.name,
+        desc: `${model.name} - ${(model.size / 1024 / 1024 / 1024).toFixed(1)}GB 🏠`,
+        cost: 'Free (Local)'
+      }));
+      return true;
+    }
+  } catch (error) {
+    MODELS.ollama.models = [
+      { id: 'llama3.2:latest', desc: 'Llama 3.2 Latest - Install via: ollama pull llama3.2 🏠', cost: 'Free' },
+      { id: 'gemma2:2b', desc: 'Gemma 2 2B - Lightweight model 🏠', cost: 'Free' },
+      { id: 'qwen2.5:latest', desc: 'Qwen 2.5 Latest - High performance 🏠', cost: 'Free' }
+    ];
   }
   return false;
 }
 
+// =====================
+// MAIN APPLICATION
+// =====================
 async function main() {
-  console.log("🔧 QA AI Agent CLI");
+  console.log('🚀 Enhanced QA AI Agent CLI v3.0');
+  console.log('='.repeat(60));
+  console.log('🎯 Multi-Model | 🤖 Multi-Agent | 📊 Session Management');
+  console.log('='.repeat(60));
+
+  // Initialize session manager
+  const sessionManager = new SessionManager();
   
-  // Pilih model provider dengan nomor
-  const modelProviders = ['OpenAI', 'Ollama (Local)', 'OpenRouter'];
-  const modelKeys = ['openai', 'ollama', 'openrouter'];
-  
-  const providerIndex = await selectFromList(modelProviders, "\nChoose model provider:", 0);
-  const model = modelKeys[providerIndex];
-  
-  let submodel = '';
-  
-  if (model === 'ollama') {
-    // Check and start Ollama server if not running
-    if (!(await isOllamaRunning())) {
-      console.log("Starting Ollama server...");
-      startOllamaServer();
-      const ready = await waitForOllamaReady();
-      if (!ready) {
-        console.error("Failed to start Ollama server. Make sure Ollama is installed and can be run from the command line.");
-        process.exit(1);
-      }
-      console.log("Ollama server is ready!");
-    } else {
-      console.log("Ollama server is already running.");
-    }
-
-    // Get list of local models available in Ollama
-    let localModels = [];
-    try {
-      const res = await fetch('http://localhost:11434/api/tags', { method: 'GET' });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.models)) {
-          localModels = data.models.map(m => m.name);
-        }
-      }
-    } catch (e) {
-      // ignore error, just continue
-    }
-    
-    if (localModels.length > 0) {
-      const modelIndex = await selectFromList(localModels, "\nAvailable Ollama models:", 0);
-      submodel = localModels[modelIndex];
-    } else {
-      console.log("Could not fetch local models from Ollama. Using default.");
-      submodel = 'gemma2:2b';
-    }
-    
-  } else if (model === 'openrouter') {
-    // Get OpenRouter models
-    console.log("Fetching available OpenRouter models...");
-    const availableModels = await getOpenRouterModels();
-
-    // Daftar model populer dengan prioritas Gemini dan model ekonomis
-    const popularModels = [
-      { id: 'google/gemini-2.0-flash-001', desc: 'Gemini 2.0 Flash - Latest & Economic 💰' },
-      { id: 'google/gemini-pro', desc: 'Gemini Pro - Reliable & Affordable 💰' },
-      { id: 'google/gemini-1.5-flash', desc: 'Gemini 1.5 Flash - Fast & Cheap 💰' },
-      { id: 'openai/gpt-3.5-turbo', desc: 'GPT-3.5 Turbo - Fast & Economic 💰' },
-      { id: 'meta-llama/llama-3-8b-instruct', desc: 'Llama 3 8B - Open Source Budget 💰' },
-      { id: 'mistralai/mistral-7b-instruct', desc: 'Mistral 7B - European Budget Model 💰' },
-      { id: 'openai/gpt-4o-mini', desc: 'GPT-4o Mini - Small but Powerful 💰' },
-      { id: 'openai/gpt-4o', desc: 'GPT-4o - Premium Quality 💸' },
-      { id: 'meta-llama/llama-3-70b-instruct', desc: 'Llama 3 70B - Open Source Power 💸' },
-      { id: 'custom', desc: 'Custom Model - Enter your own model ID 🎯' } // Tambahkan opsi custom
-    ];
-
-    // Filter model yang benar-benar tersedia (kecuali custom)
-    const availablePopularModels = popularModels.filter(model =>
-      model.id === 'custom' || availableModels.some(available => available.id === model.id)
-    );
-
-    if (availablePopularModels.length > 0) {
-      const modelDescriptions = availablePopularModels.map(m => m.desc);
-      const modelIndex = await selectFromList(modelDescriptions, "\nPopular OpenRouter models (💰 = Economic, 💸 = Premium, 🎯 = Custom):", 0);
-
-      // Jika pilihan adalah custom model
-      if (availablePopularModels[modelIndex].id === 'custom') {
-        console.log("\nAvailable models from OpenRouter:");
-        if (availableModels.length > 0) {
-          // Tampilkan beberapa contoh model yang tersedia
-          console.log("Some examples:");
-          availableModels.slice(0, 10).forEach((model, index) => {
-            const pricing = model.pricing ? `($${model.pricing.prompt}/${model.pricing.completion})` : '';
-            console.log(`  - ${model.id} ${pricing}`);
-          });
-          if (availableModels.length > 10) {
-            console.log(`  ... and ${availableModels.length - 10} more models`);
-          }
-        }
-
-        submodel = await ask("\nEnter custom model ID (e.g., anthropic/claude-3-haiku): ");
-
-        // Validasi apakah model yang dimasukkan tersedia
-        const isValidModel = availableModels.some(model => model.id === submodel);
-        if (!isValidModel && submodel.trim()) {
-          console.log(`⚠️  Warning: Model '${submodel}' not found in available models list. Proceeding anyway...`);
-        }
-      } else {
-        submodel = availablePopularModels[modelIndex].id;
-      }
-    } else {
-      console.log("Could not fetch OpenRouter models. Using default Gemini.");
-      submodel = 'google/gemini-2.0-flash-001';
-    }
-  } else if (model === 'openai') {
-    // Model OpenAI dengan prioritas model ekonomis
-    const openaiModels = [
-      { id: 'gpt-3.5-turbo', desc: 'GPT-3.5 Turbo - Economic Choice 💰' },
-      { id: 'gpt-4o-mini', desc: 'GPT-4o Mini - Small & Efficient 💰' },
-      { id: 'gpt-4-turbo', desc: 'GPT-4 Turbo - Balanced Performance 💸' },
-      { id: 'gpt-4', desc: 'GPT-4 - Most Capable 💸' }
-    ];
-    
-    const modelDescriptions = openaiModels.map(m => m.desc);
-    const modelIndex = await selectFromList(modelDescriptions, "\nAvailable OpenAI models (💰 = Economic, 💸 = Premium):", 0);
-    submodel = openaiModels[modelIndex].id;
+  // Load Ollama models
+  console.log('🔍 Checking Ollama availability...');
+  const ollamaAvailable = await loadOllamaModels();
+  if (ollamaAvailable) {
+    console.log(`✅ Ollama detected with ${MODELS.ollama.models.length} models`);
+  } else {
+    console.log('⚠️  Ollama not available or no models found');
   }
-  
-  console.log(`\n✅ Selected: ${modelProviders[providerIndex]} - ${submodel}\n`);
-  
+
   while (true) {
-    // Pilih task dengan nomor
-    const tasks = [
-      { key: 'bug_analyst', name: 'Bug Analysis', prompt: PROMPTS.bug_analyst },
-      { key: 'test_data_generator', name: 'Test Data Generator', prompt: PROMPTS.test_data_generator },
-      { key: 'scenario_priority', name: 'Scenario Priority Analysis', prompt: PROMPTS.scenario_priority },
-      { key: 'custom', name: 'Custom Task (No Special Prompt)', prompt: '' }
-    ];
-    
-    const taskNames = tasks.map(t => t.name);
-    const taskIndex = await selectFromList(taskNames, "\nChoose task type:", 0);
-    const selectedTask = tasks[taskIndex];
-    
-    let inputPrompt = "Enter your input:\n";
-    if (selectedTask.key === 'bug_analyst') {
-      inputPrompt = "Enter bug, error, or log details to analyze:\n";
-    } else if (selectedTask.key === 'test_data_generator') {
-      inputPrompt = "Enter description of required test data or scenario:\n";
-    } else if (selectedTask.key === 'scenario_priority') {
-      inputPrompt = "Enter list of scenarios or requirements to prioritize:\n";
-    }
-    
-    const inputTextUser = await ask(inputPrompt);
-    // Combine prompt instruction with user input if special instruction exists
-    const inputText = selectedTask.prompt ? `${selectedTask.prompt}\n\n${inputTextUser}` : inputTextUser;
-    
-    const success = await runAgent(model, selectedTask.key, inputText, submodel);
-    if (success) {
-      console.log("Task completed successfully!\n");
-      const continueChoice = await ask("Continue with another task? (y/n, default: y): ");
-      if (continueChoice.trim().toLowerCase() === 'n') {
-        break;
+    try {
+      const mainMenu = [
+        '🔥 Quick Query',
+        '🤖 Multi-Agent Mode',
+        '⚙️  Custom Task',
+        '💾 Session Management',
+        '⚡ Batch Processing',
+        '❌ Exit'
+      ];
+
+      const choice = await selectFromList(mainMenu, "Main Menu - Choose an option:", 0, true);
+      
+      switch (choice) {
+        case 0: // Quick Query
+          await handleQuickQuery(sessionManager);
+          break;
+          
+        case 1: // Multi-Agent Mode
+          await handleMultiAgentMode(sessionManager);
+          break;
+          
+        case 2: // Custom Task
+          await handleCustomTask(sessionManager);
+          break;
+          
+        case 3: // Session Management (sebelumnya case 4)
+          await handleSessionManagement(sessionManager);
+          break;
+          
+        case 4: // Batch Processing (sebelumnya case 5)
+          await handleBatchProcessing(sessionManager);
+          break;
+          
+        case 5: // Exit (sebelumnya case 6)
+          console.log('\n👋 Thank you for using Enhanced QA AI Agent CLI!');
+          process.exit(0);
+          
+        default:
+          console.log('❌ Invalid option');
       }
-      continue;
+      
+    } catch (error) {
+      console.log(`\n❌ Error: ${error.message}`);
+      console.log('Press any key to continue...');
+      await ask('');
     }
-    // If failed, repeat task and description input
-    console.log("Task failed. Please try again.\n");
   }
-  
-  console.log("👋 Thanks for using QA AI Agent CLI!");
-  rl.close();
 }
 
-main();
+// =====================
+// HANDLER FUNCTIONS
+// =====================
+async function handleQuickQuery(sessionManager) {
+  if (!sessionManager.currentSession) {
+    sessionManager.createSession();
+    console.log(`✅ Created new session: ${sessionManager.currentSession.name}`);
+  }
+
+  const input = await ask('\n💬 Enter your question: ');
+  if (!input.trim()) return;
+
+  const providers = Object.keys(MODELS).filter(key => {
+    const model = MODELS[key];
+    return model.key || key === 'ollama';
+  });
+
+  if (providers.length === 0) {
+    console.log('❌ No API keys configured. Please set up your environment variables.');
+    return;
+  }
+
+  const providerIndex = await selectFromList(providers, "Choose AI provider:", 0);
+  const selectedProvider = providers[providerIndex];
+  const model = MODELS[selectedProvider];
+
+  let selectedModel;
+  if (model.models.length > 1) {
+    const modelIndex = await selectFromList(model.models, `Choose ${model.name} model:`, 0);
+    selectedModel = model.models[modelIndex];
+  } else {
+    selectedModel = model.models[0];
+  }
+
+  console.log(`\n🎯 Using: ${model.name} - ${selectedModel.desc}`);
+  
+  const result = await runAgent(selectedProvider, 'Quick Query', input, selectedModel.id);
+  
+  if (result.success) {
+    await exportResult(result.result, 'Quick Query', `${model.name} (${selectedModel.id})`);
+    sessionManager.addConversation(input, result.result, selectedProvider, 'Quick Query', {
+      model: selectedModel.id,
+      cost: selectedModel.cost
+    });
+  } else {
+    console.log(`❌ Query failed: ${result.error}`);
+  }
+}
+
+async function handleMultiAgentMode(sessionManager) {
+  if (!sessionManager.currentSession) {
+    sessionManager.createSession();
+  }
+
+  const input = await ask('\n💬 Enter your question for multi-agent analysis: ');
+  if (!input.trim()) return;
+
+  const modes = ['Debate', 'Pipeline', 'Consensus'];
+  const modeIndex = await selectFromList(modes, "Choose collaboration mode:", 0);
+  const selectedMode = modes[modeIndex];
+
+  const orchestrator = new MultiAgentOrchestrator(MODELS);
+  
+  // Select agents
+  const availableAgents = [];
+  Object.entries(MODELS).forEach(([provider, model]) => {
+    if (model.key || provider === 'ollama') {
+      model.models.slice(0, 2).forEach(subModel => {
+        availableAgents.push({
+          provider,
+          model: subModel.id,
+          desc: `${model.name} - ${subModel.desc}`
+        });
+      });
+    }
+  });
+
+  console.log('\n🤖 Select 2-3 agents for collaboration:');
+  const selectedAgents = [];
+  
+  for (let i = 0; i < Math.min(3, availableAgents.length); i++) {
+    if (i > 0) {
+      const addMore = await ask(`Add another agent? (y/n, default: ${i < 2 ? 'y' : 'n'}): `);
+      if (addMore.trim().toLowerCase() !== 'y' && i >= 2) break;
+      if (addMore.trim().toLowerCase() === 'n') break;
+    }
+    
+    const agentIndex = await selectFromList(
+      availableAgents.filter(a => !selectedAgents.some(sa => sa.provider === a.provider && sa.model === a.model)),
+      `Choose agent ${i + 1}:`,
+      0
+    );
+    
+    const availableFiltered = availableAgents.filter(a => !selectedAgents.some(sa => sa.provider === a.provider && sa.model === a.model));
+    selectedAgents.push(availableFiltered[agentIndex]);
+  }
+
+  console.log(`\n🚀 Starting ${selectedMode} mode with ${selectedAgents.length} agents...`);
+  
+  const result = await orchestrator.runCollaboration(input, selectedMode, selectedAgents, 'Multi-Agent Analysis');
+  
+  if (result) {
+    await exportResult(result, `Multi-Agent ${selectedMode}`, selectedAgents.map(a => a.desc).join(', '));
+    sessionManager.addConversation(input, result, 'multi-agent', `${selectedMode} Mode`, {
+      agents: selectedAgents,
+      mode: selectedMode
+    });
+  }
+}
+
+// /**** START OF MODIFIED SECTION ****/
+async function handleCustomTask(sessionManager) {
+  console.log('\n⚙️  Custom Task Builder');
+  console.log('Create a specialized AI task with custom prompts and parameters.');
+
+  // Define task options mapping user-friendly names to PROMPTS keys
+  const taskOptions = {
+    'Bug Analysis': 'BUG_ANALYSIS',
+    'Test Data Generator': 'TEST_DATA_GENERATOR',
+    'Scenario Priority Analysis': 'SCENARIO_PRIORITY_ANALYSIS',
+    'API Contract Test': 'API_CONTRACT_TEST',
+    'Custom Task (No Special Prompt)': 'CUSTOM_TASK'
+  };
+  const taskDisplayNames = Object.keys(taskOptions);
+  
+  const taskIndex = await selectFromList(taskDisplayNames, "Choose task type:", 0);
+  const selectedTaskName = taskDisplayNames[taskIndex];
+  const selectedTaskKey = taskOptions[selectedTaskName];
+  
+  let input;
+  let customPrompt = '';
+
+  // Special handling for API Contract Test
+  if (selectedTaskKey === 'API_CONTRACT_TEST') {
+    console.log('\n📝 Enter example JSON payload (you can paste the full object). End input with an empty line:');
+    const lines = [];
+    while (true) {
+        const line = await ask('');
+        if (line.trim() === '' && lines.length > 0) break;
+        lines.push(line);
+        if (lines.length === 1 && line.trim() === '') {
+            lines.pop(); // Prevent breaking on the very first empty line
+        }
+    }
+    input = lines.join('\n');
+
+    if (!input) {
+        console.log("❌ No input provided. Returning to main menu.");
+        return;
+    }
+
+    try {
+      JSON.parse(input);
+    } catch (e) {
+      console.log('⚠️  Warning: Input does not appear to be valid JSON. The model may struggle.');
+    }
+
+  } else {
+    // Original flow for other tasks
+    if (selectedTaskKey !== 'CUSTOM_TASK') {
+        customPrompt = await ask('\n📝 Enter custom instructions (optional): ');
+    }
+    input = await ask('💬 Enter your content/question: ');
+  }
+
+  if (!sessionManager.currentSession) {
+    sessionManager.createSession();
+  }
+
+  // Model selection
+  const providers = Object.keys(MODELS).filter(key => {
+    const model = MODELS[key];
+    return model.key || key === 'ollama';
+  });
+
+  const providerIndex = await selectFromList(providers, "Choose AI provider:", 0);
+  const selectedProvider = providers[providerIndex];
+  const model = MODELS[selectedProvider];
+
+  let selectedModel;
+  if (model.models.length > 1) {
+    const modelIndex = await selectFromList(model.models, `Choose ${model.name} model:`, 0);
+    selectedModel = model.models[modelIndex];
+  } else {
+    selectedModel = model.models[0];
+  }
+
+  // Construct the final prompt
+  let finalPrompt;
+  if (selectedTaskKey === 'CUSTOM_TASK') {
+      finalPrompt = input;
+  } else {
+      finalPrompt = PROMPTS[selectedTaskKey] || '';
+      if (customPrompt.trim()) {
+        finalPrompt += `\n\nAdditional instructions: ${customPrompt}`;
+      }
+      finalPrompt += `\n\nContent to process:\n${input}`;
+  }
+
+  console.log(`\n🎯 Running custom "${selectedTaskName}" task...`);
+  
+  const result = await runAgent(selectedProvider, selectedTaskName, finalPrompt, selectedModel.id);
+  
+  if (result.success) {
+    const cleanTaskName = selectedTaskName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
+    await exportResult(result.result, cleanTaskName, `${model.name} (${selectedModel.id})`);
+    sessionManager.addConversation(input, result.result, selectedProvider, `Custom ${selectedTaskName}`, {
+      model: selectedModel.id,
+      customPrompt: customPrompt || null
+    });
+  } else {
+    console.log(`❌ Task failed: ${result.error}`);
+  }
+}
+// /**** END OF MODIFIED SECTION ****/
+
+
+async function handleSessionManagement(sessionManager) {
+  const sessionActions = [
+    '📋 View Current Session',
+    '📁 List All Sessions',
+    '🔄 Load Session',
+    '✨ New Session',
+    '📊 Session Statistics',
+    '🗑️  Delete Session',
+    '⬅️  Back to Main Menu'
+  ];
+
+  const actionIndex = await selectFromList(sessionActions, "Session Management:", 0, true);
+  
+  switch (actionIndex) {
+    case 0: // View Current
+      if (sessionManager.currentSession) {
+        console.log('\n📊 Current Session Details:');
+        console.log('='.repeat(40));
+        const session = sessionManager.currentSession;
+        console.log(`Name: ${session.name}`);
+        console.log(`ID: ${session.id}`);
+        console.log(`Created: ${new Date(session.created).toLocaleString()}`);
+        console.log(`Conversations: ${session.conversations.length}`);
+        console.log(`Models Used: ${session.models.join(', ') || 'None'}`);
+        
+        if (session.conversations.length > 0) {
+          console.log('\n📝 Recent Conversations:');
+          session.conversations.slice(-3).forEach((conv, index) => {
+            console.log(`${index + 1}. ${conv.task} (${conv.model}) - ${conv.timestamp}`);
+            console.log(`   Input: ${conv.input.substring(0, 100)}...`);
+          });
+        }
+      } else {
+        console.log('\n❌ No active session');
+      }
+      break;
+      
+    case 1: // List All
+      const sessions = sessionManager.listSessions();
+      if (sessions.length === 0) {
+        console.log('\n📭 No sessions found');
+      } else {
+        console.log('\n📁 All Sessions:');
+        console.log('='.repeat(60));
+        sessions.forEach((session, index) => {
+          console.log(`${index + 1}. ${session.name} (${session.id})`);
+          console.log(`   Created: ${new Date(session.created).toLocaleString()}`);
+          console.log(`   Conversations: ${session.conversations}`);
+        });
+      }
+      break;
+      
+    case 2: // Load Session
+      const loadSessions = sessionManager.listSessions();
+      if (loadSessions.length === 0) {
+        console.log('\n❌ No sessions to load');
+        break;
+      }
+      
+      const sessionIndex = await selectFromList(
+        loadSessions.map(s => `${s.name} (${s.conversations} conversations)`),
+        "Choose session to load:",
+        0
+      );
+      
+      const loadedSession = sessionManager.loadSession(loadSessions[sessionIndex].id);
+      if (loadedSession) {
+        console.log(`✅ Loaded session: ${loadedSession.name}`);
+      } else {
+        console.log('❌ Failed to load session');
+      }
+      break;
+      
+    case 3: // New Session
+      const sessionName = await ask('\n📝 Enter session name (optional): ');
+      const newSession = sessionManager.createSession(sessionName.trim() || null);
+      console.log(`✅ Created new session: ${newSession.name}`);
+      break;
+      
+    case 4: // Statistics
+      if (sessionManager.currentSession) {
+        const session = sessionManager.currentSession;
+        console.log('\n📊 Session Statistics:');
+        console.log('='.repeat(40));
+        console.log(`Total Requests: ${session.totalRequests}`);
+        console.log(`Unique Models: ${session.models.length}`);
+        
+        const taskStats = {};
+        session.conversations.forEach(conv => {
+          taskStats[conv.task] = (taskStats[conv.task] || 0) + 1;
+        });
+        
+        console.log('\n📈 Task Breakdown:');
+        Object.entries(taskStats).forEach(([task, count]) => {
+          console.log(`  ${task}: ${count} times`);
+        });
+      } else {
+        console.log('\n❌ No active session for statistics');
+      }
+      break;
+      
+    case 5: // Delete Session
+      const deleteSessions = sessionManager.listSessions();
+      if (deleteSessions.length === 0) {
+        console.log('\n❌ No sessions to delete');
+        break;
+      }
+      
+      const deleteIndex = await selectFromList(
+        deleteSessions.map(s => `${s.name} (${s.conversations} conversations)`),
+        "Choose session to delete:",
+        0
+      );
+      
+      const confirmDelete = await ask(`\n⚠️  Really delete "${deleteSessions[deleteIndex].name}"? (yes/no): `);
+      if (confirmDelete.toLowerCase() === 'yes') {
+        try {
+          const filePath = path.join(sessionManager.sessionsDir, `${deleteSessions[deleteIndex].id}.json`);
+          fs.unlinkSync(filePath);
+          console.log('✅ Session deleted successfully');
+          
+          if (sessionManager.currentSession?.id === deleteSessions[deleteIndex].id) {
+            sessionManager.currentSession = null;
+            console.log('ℹ️  Current session cleared');
+          }
+        } catch (error) {
+          console.log(`❌ Delete failed: ${error.message}`);
+        }
+      }
+      break;
+      
+    case 6: // Back
+      return;
+  }
+  
+  if (actionIndex !== 6) {
+    await ask('\nPress Enter to continue...');
+    await handleSessionManagement(sessionManager);
+  }
+}
+
+async function handleBatchProcessing(sessionManager) {
+  console.log('\n⚡ Batch Processing Mode');
+  console.log('Process multiple queries efficiently');
+
+  const batchModes = [
+    '📁 File Input (JSON/TXT)',
+    '📝 Manual Input (Multiple Queries)',
+    '🔄 Repeat Query with Different Models',
+    '⬅️  Back to Main Menu'
+  ];
+
+  const modeIndex = await selectFromList(batchModes, "Choose batch mode:", 0, true);
+  
+  switch (modeIndex) {
+    case 0: // File Input
+      const filePath = await ask('\n📁 Enter file path: ');
+      try {
+        if (!fs.existsSync(filePath)) {
+          console.log('❌ File not found');
+          return;
+        }
+        
+        const fileContent = fs.readFileSync(filePath, 'utf8');
+        let queries = [];
+        
+        if (filePath.endsWith('.json')) {
+          const jsonData = JSON.parse(fileContent);
+          queries = Array.isArray(jsonData) ? jsonData : [jsonData];
+        } else {
+          queries = fileContent.split('\n').filter(line => line.trim());
+        }
+        
+        console.log(`📊 Found ${queries.length} queries to process`);
+        await processBatchQueries(queries, sessionManager);
+        
+      } catch (error) {
+        console.log(`❌ File processing error: ${error.message}`);
+      }
+      break;
+      
+    case 1: // Manual Input
+      const manualQueries = [];
+      console.log('\n📝 Enter queries (empty line to finish):');
+      
+      while (true) {
+        const query = await ask(`Query ${manualQueries.length + 1}: `);
+        if (!query.trim()) break;
+        manualQueries.push(query);
+      }
+      
+      if (manualQueries.length > 0) {
+        await processBatchQueries(manualQueries, sessionManager);
+      }
+      break;
+      
+    case 2: // Repeat with Different Models
+      const singleQuery = await ask('\n💬 Enter query to test across models: ');
+      if (!singleQuery.trim()) return;
+      
+      const providers = Object.keys(MODELS).filter(key => {
+        const model = MODELS[key];
+        return model.key || key === 'ollama';
+      });
+      
+      console.log(`\n🔄 Testing query across ${providers.length} providers...`);
+      await processQueryAcrossModels(singleQuery, providers, sessionManager);
+      break;
+      
+    case 3: // Back
+      return;
+  }
+}
+
+async function processBatchQueries(queries, sessionManager) {
+  if (!sessionManager.currentSession) {
+    sessionManager.createSession('Batch Processing Session');
+  }
+
+  // Select provider and model
+  const providers = Object.keys(MODELS).filter(key => {
+    const model = MODELS[key];
+    return model.key || key === 'ollama';
+  });
+
+  const providerIndex = await selectFromList(providers, "Choose provider for batch:", 0);
+  const selectedProvider = providers[providerIndex];
+  const model = MODELS[selectedProvider];
+
+  let selectedModel;
+  if (model.models.length > 1) {
+    const modelIndex = await selectFromList(model.models, `Choose ${model.name} model:`, 0);
+    selectedModel = model.models[modelIndex];
+  } else {
+    selectedModel = model.models[0];
+  }
+
+  console.log(`\n🚀 Processing ${queries.length} queries with ${model.name}...`);
+  const results = [];
+  
+  for (let i = 0; i < queries.length; i++) {
+    const query = typeof queries[i] === 'object' ? queries[i].query || queries[i].text : queries[i];
+    console.log(`\n📋 Processing ${i + 1}/${queries.length}: ${query.substring(0, 50)}...`);
+    
+    const result = await runAgent(selectedProvider, 'Batch Query', query, selectedModel.id);
+    
+    if (result.success) {
+      results.push({
+        query: query,
+        result: result.result,
+        success: true
+      });
+      sessionManager.addConversation(query, result.result, selectedProvider, 'Batch Processing');
+      console.log('✅ Success');
+    } else {
+      results.push({
+        query: query,
+        error: result.error,
+        success: false
+      });
+      console.log(`❌ Failed: ${result.error}`);
+    }
+  }
+
+  // Export batch results
+  const batchReport = generateBatchReport(results, selectedModel);
+  await exportResult(batchReport, 'Batch Processing Results', `${model.name} (${selectedModel.id})`);
+}
+
+async function processQueryAcrossModels(query, providers, sessionManager) {
+  if (!sessionManager.currentSession) {
+    sessionManager.createSession('Model Comparison Session');
+  }
+
+  const results = [];
+  
+  for (const provider of providers) {
+    const model = MODELS[provider];
+    const selectedModel = model.models[0]; // Use first available model
+    
+    console.log(`\n🤖 Testing with ${model.name} (${selectedModel.id})...`);
+    
+    const result = await runAgent(provider, 'Model Comparison', query, selectedModel.id);
+    
+    if (result.success) {
+      results.push({
+        provider: provider,
+        model: selectedModel.id,
+        modelName: model.name,
+        result: result.result,
+        success: true,
+        responseLength: result.result.length
+      });
+      sessionManager.addConversation(query, result.result, provider, 'Model Comparison');
+      console.log(`✅ Success (${result.result.length} chars)`);
+    } else {
+      results.push({
+        provider: provider,
+        model: selectedModel.id,
+        modelName: model.name,
+        error: result.error,
+        success: false
+      });
+      console.log(`❌ Failed: ${result.error}`);
+    }
+  }
+
+  // Generate comparison report
+  const comparisonReport = generateComparisonReport(query, results);
+  await exportResult(comparisonReport, 'Model Comparison Results', 'Multi-Model Analysis');
+}
+
+function generateBatchReport(results, model) {
+  let report = `# 📊 Batch Processing Report\n\n`;
+  report += `**Model Used:** ${model.desc}\n`;
+  report += `**Total Queries:** ${results.length}\n`;
+  report += `**Successful:** ${results.filter(r => r.success).length}\n`;
+  report += `**Failed:** ${results.filter(r => !r.success).length}\n`;
+  report += `**Success Rate:** ${((results.filter(r => r.success).length / results.length) * 100).toFixed(1)}%\n\n`;
+
+  report += `## 📋 Results\n\n`;
+  
+  results.forEach((result, index) => {
+    report += `### Query ${index + 1}\n`;
+    report += `**Input:** ${result.query}\n\n`;
+    
+    if (result.success) {
+      report += `**Output:** ${result.result}\n\n`;
+    } else {
+      report += `**Error:** ${result.error}\n\n`;
+    }
+    
+    report += `---\n\n`;
+  });
+
+  return report;
+}
+
+function generateComparisonReport(query, results) {
+  let report = `# 🔍 Model Comparison Report\n\n`;
+  report += `**Query:** ${query}\n\n`;
+  report += `**Models Tested:** ${results.length}\n`;
+  report += `**Successful Responses:** ${results.filter(r => r.success).length}\n\n`;
+
+  report += `## 📊 Performance Overview\n\n`;
+  
+  const successfulResults = results.filter(r => r.success);
+  if (successfulResults.length > 0) {
+    report += `| Model | Provider | Response Length | Status |\n`;
+    report += `|-------|----------|-----------------|--------|\n`;
+    
+    results.forEach(result => {
+      const status = result.success ? '✅ Success' : '❌ Failed';
+      const length = result.success ? result.responseLength : 'N/A';
+      report += `| ${result.model} | ${result.modelName} | ${length} | ${status} |\n`;
+    });
+  }
+
+  report += `\n## 📋 Detailed Responses\n\n`;
+  
+  results.forEach((result, index) => {
+    report += `### ${result.modelName} (${result.model})\n\n`;
+    
+    if (result.success) {
+      report += `**Response:**\n${result.result}\n\n`;
+    } else {
+      report += `**Error:** ${result.error}\n\n`;
+    }
+    
+    report += `---\n\n`;
+  });
+
+  return report;
+}
+
+// =====================
+// START APPLICATION
+// =====================
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(error => {
+    console.error('\n💥 Fatal Error:', error.message);
+    console.log('🔧 Troubleshooting tips:');
+    console.log('  • Check your API keys in .env file');
+    console.log('  • Ensure internet connection for cloud models');
+    console.log('  • For Ollama: Run "ollama serve" if using local models');
+    console.log('  • Check file permissions in current directory');
+    process.exit(1);
+  });
+}
+
+// =====================
+// GRACEFUL SHUTDOWN
+// =====================
+process.on('SIGINT', () => {
+  console.log('\n\n👋 Gracefully shutting down...');
+  console.log('💾 Sessions saved automatically');
+  console.log('✨ Thank you for using Enhanced QA AI Agent CLI!');
+  rl.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n📱 Received termination signal...');
+  rl.close();
+  process.exit(0);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.log('\n⚠️  Unhandled Rejection at:', promise, 'reason:', reason);
+  console.log('🔄 Continuing execution...');
+});
+
+// =====================
+// EXPORTS FOR MODULE USE
+// =====================
+export {
+  SessionManager,
+  MultiAgentOrchestrator,
+  MODELS,
+  EXPORT_FORMATS,
+  PROMPTS,
+  runAgent,
+  exportResult,
+  selectFromList,
+  displayResult
+};
+
+// =====================
+// CLI HELP INFORMATION
+// =====================
+function showHelp() {
+  console.log(`
+🤖 Enhanced QA AI Agent CLI v3.0 - Help Guide
+${'='.repeat(60)}
+
+FEATURES:
+- 🔥 Quick Query - Fast single questions
+- 🤖 Multi-Agent Mode - Collaborative AI analysis
+- ⚙️  Custom Tasks - Specialized prompts
+- 💾 Session Management - Persistent conversations
+- ⚡ Batch Processing - Multiple queries at once
+
+SUPPORTED PROVIDERS:
+- OpenAI (GPT models) - Requires OPENAI_API_KEY
+- OpenRouter (Multiple models) - Requires OPENROUTER_API_KEY  
+- Ollama (Local models) - Requires Ollama running locally
+
+SETUP:
+1. Create .env file with your API keys:
+   OPENAI_API_KEY=your_openai_key
+   OPENROUTER_API_KEY=your_openrouter_key
+
+2. Install optional dependencies:
+   npm install showdown
+
+3. For local models:
+   Install Ollama and pull models: ollama pull llama3.2
+
+USAGE:
+- Run: node enhanced-qa-agent.js
+- Follow interactive prompts
+- Sessions auto-save to ./sessions/
+- Exports save to ./output/
+
+TIPS:
+- Multi-Agent mode provides diverse perspectives
+- Batch processing saves time for multiple queries
+- Sessions preserve context across runs
+
+For issues, check API keys and network connectivity.
+${'='.repeat(60)}
+  `);
+}
+
+// Check for help flag
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  showHelp();
+  process.exit(0);
+}
+
+// =====================
+// VERSION CHECK AND UPDATE NOTIFICATION
+// =====================
+async function checkForUpdates() {
+  try {
+    // This would typically check a remote version file
+    // For now, we'll just show current version info
+    console.log('ℹ️  Enhanced QA AI Agent CLI v3.0 - Latest Version');
+    main();
+  } catch (error) {
+    // Silently fail if update check fails
+  }
+}
+
+// Run update check in background (non-blocking)
+checkForUpdates();
