@@ -975,22 +975,66 @@ async function handleMultiAgentMode(sessionManager) {
   }
 }
 
+// /**** START OF MODIFIED SECTION ****/
 async function handleCustomTask(sessionManager) {
   console.log('\n⚙️  Custom Task Builder');
   console.log('Create a specialized AI task with custom prompts and parameters.');
+
+  // Define task options mapping user-friendly names to PROMPTS keys
+  const taskOptions = {
+    'Bug Analysis': 'BUG_ANALYSIS',
+    'Test Data Generator': 'TEST_DATA_GENERATOR',
+    'Scenario Priority Analysis': 'SCENARIO_PRIORITY_ANALYSIS',
+    'API Contract Test': 'API_CONTRACT_TEST',
+    'Custom Task (No Special Prompt)': 'CUSTOM_TASK'
+  };
+  const taskDisplayNames = Object.keys(taskOptions);
   
-  const taskTypes = Object.keys(PROMPTS);
-  const taskIndex = await selectFromList(taskTypes, "Choose base task type:", 0);
-  const selectedTask = taskTypes[taskIndex];
+  const taskIndex = await selectFromList(taskDisplayNames, "Choose task type:", 0);
+  const selectedTaskName = taskDisplayNames[taskIndex];
+  const selectedTaskKey = taskOptions[selectedTaskName];
   
-  const customPrompt = await ask('\n📝 Enter custom instructions (optional): ');
-  const input = await ask('💬 Enter your content/question: ');
-  
+  let input;
+  let customPrompt = '';
+
+  // Special handling for API Contract Test
+  if (selectedTaskKey === 'API_CONTRACT_TEST') {
+    console.log('\n📝 Enter example JSON payload (you can paste the full object). End input with an empty line:');
+    const lines = [];
+    while (true) {
+        const line = await ask('');
+        if (line.trim() === '' && lines.length > 0) break;
+        lines.push(line);
+        if (lines.length === 1 && line.trim() === '') {
+            lines.pop(); // Prevent breaking on the very first empty line
+        }
+    }
+    input = lines.join('\n');
+
+    if (!input) {
+        console.log("❌ No input provided. Returning to main menu.");
+        return;
+    }
+
+    try {
+      JSON.parse(input);
+    } catch (e) {
+      console.log('⚠️  Warning: Input does not appear to be valid JSON. The model may struggle.');
+    }
+
+  } else {
+    // Original flow for other tasks
+    if (selectedTaskKey !== 'CUSTOM_TASK') {
+        customPrompt = await ask('\n📝 Enter custom instructions (optional): ');
+    }
+    input = await ask('💬 Enter your content/question: ');
+  }
+
   if (!sessionManager.currentSession) {
     sessionManager.createSession();
   }
 
-  // Model selection similar to quick query
+  // Model selection
   const providers = Object.keys(MODELS).filter(key => {
     const model = MODELS[key];
     return model.key || key === 'ollama';
@@ -1008,19 +1052,26 @@ async function handleCustomTask(sessionManager) {
     selectedModel = model.models[0];
   }
 
-  let finalPrompt = PROMPTS[selectedTask];
-  if (customPrompt.trim()) {
-    finalPrompt += `\n\nAdditional instructions: ${customPrompt}\n\n`;
+  // Construct the final prompt
+  let finalPrompt;
+  if (selectedTaskKey === 'CUSTOM_TASK') {
+      finalPrompt = input;
+  } else {
+      finalPrompt = PROMPTS[selectedTaskKey] || '';
+      if (customPrompt.trim()) {
+        finalPrompt += `\n\nAdditional instructions: ${customPrompt}`;
+      }
+      finalPrompt += `\n\nContent to process:\n${input}`;
   }
-  finalPrompt += `\n\nContent to process:\n${input}`;
 
-  console.log(`\n🎯 Running custom ${selectedTask} task...`);
+  console.log(`\n🎯 Running custom "${selectedTaskName}" task...`);
   
-  const result = await runAgent(selectedProvider, selectedTask, finalPrompt, selectedModel.id);
+  const result = await runAgent(selectedProvider, selectedTaskName, finalPrompt, selectedModel.id);
   
   if (result.success) {
-    await exportResult(result.result, `Custom ${selectedTask}`, `${model.name} (${selectedModel.id})`);
-    sessionManager.addConversation(input, result.result, selectedProvider, `Custom ${selectedTask}`, {
+    const cleanTaskName = selectedTaskName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
+    await exportResult(result.result, cleanTaskName, `${model.name} (${selectedModel.id})`);
+    sessionManager.addConversation(input, result.result, selectedProvider, `Custom ${selectedTaskName}`, {
       model: selectedModel.id,
       customPrompt: customPrompt || null
     });
@@ -1028,6 +1079,8 @@ async function handleCustomTask(sessionManager) {
     console.log(`❌ Task failed: ${result.error}`);
   }
 }
+// /**** END OF MODIFIED SECTION ****/
+
 
 async function handleSessionManagement(sessionManager) {
   const sessionActions = [
