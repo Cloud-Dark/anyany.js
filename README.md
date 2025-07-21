@@ -3,7 +3,7 @@
 GenAI CLI for QA: bug analysis, scenario prioritization, and automated test data generation. Supports OpenAI (GPT-4) and Ollama (local models such as gemma2:2b).
 
 ## Features
-- Choose model: OpenAI (cloud) or Ollama (local)
+- Choose model: OpenAI (cloud), Open Router (Cloud), Ollama (local)
 - Automatic structured prompts based on task (bug, test data, scenario priority)
 - Analysis results are saved in the `output/` folder
 - Automatically detects and starts Ollama local model if not running
@@ -22,7 +22,7 @@ GenAI CLI for QA: bug analysis, scenario prioritization, and automated test data
 3. Copy `.env.example` to `.env` and fill in the required variables:
    ```
    cp .env.example .env
-   # Edit .env and set your OPENAI_API_KEY if you want to use OpenAI
+   # Edit .env and set your key
    ```
 
 ## Usage
@@ -31,7 +31,7 @@ Run:
 node agent.js
 ```
 Follow the CLI instructions:
-- Choose model (openai/ollama)
+- Choose model (openai/openrouter/ollama)
 - If ollama, select the local model (e.g. gemma2:2b)
 - Enter the task name (bug_analyst, test_data_generator, scenario_priority)
 - Enter the description/log as instructed
