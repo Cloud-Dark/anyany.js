@@ -843,6 +843,9 @@ async function main() {
   console.log('🎯 Multi-Model | 🤖 Multi-Agent | 📊 Session Management');
   console.log('='.repeat(60));
 
+  // Initialize API keys before doing anything else
+  await checkAndSetupApiKeys();
+
   await ensureOllamaRunning();
 
   // Initialize session manager
@@ -1131,6 +1134,7 @@ async function handleSessionManagement(sessionManager) {
     '🔄 Load Session',
     '✨ New Session',
     '📊 Session Statistics',
+    '🔑 Manage API Keys',
     '🗑️ Delete Session',
     '⬅️ Back to Main Menu'
   ];
@@ -1224,8 +1228,12 @@ async function handleSessionManagement(sessionManager) {
         console.log('\n❌ No active session for statistics');
       }
       break;
-      
-    case 5: // Delete Session
+
+    case 5: // Manage API Keys 
+      await manageApiKeys();
+      break;
+
+    case 6: // Delete Session
       const deleteSessions = sessionManager.listSessions();
       if (deleteSessions.length === 0) {
         console.log('\n❌ No sessions to delete');
@@ -1255,11 +1263,11 @@ async function handleSessionManagement(sessionManager) {
       }
       break;
       
-    case 6: // Back
+    case 7: // Back
       return;
   }
   
-  if (actionIndex !== 6) {
+  if (actionIndex !== 7) {
     await ask('\nPress Enter to continue...');
     await handleSessionManagement(sessionManager);
   }
@@ -1498,7 +1506,246 @@ function generateComparisonReport(query, results) {
 
   return report;
 }
+// =====================
+// API KEY MANAGEMENT
+// =====================
+async function checkAndSetupApiKeys() {
+  const envPath = '.env';
+  let envChanged = false;
+  
+  // Check if .env file exists
+  if (!fs.existsSync(envPath)) {
+    console.log('📝 Creating .env file...');
+    fs.writeFileSync(envPath, '', 'utf8');
+  }
 
+  // Read current .env content
+  const currentEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+  const envLines = currentEnv.split('\n').filter(line => line.trim());
+  const envVars = {};
+  
+  // Parse existing environment variables
+  envLines.forEach(line => {
+    const [key, ...valueParts] = line.split('=');
+    if (key && valueParts.length > 0) {
+      envVars[key.trim()] = valueParts.join('=').trim();
+    }
+  });
+
+  console.log('\n🔐 API Key Configuration');
+  console.log('='.repeat(60));
+
+  // Check OpenAI API Key
+  if (!process.env.OPENAI_API_KEY && !envVars.OPENAI_API_KEY) {
+    console.log('\n🤖 OpenAI Configuration:');
+    console.log('Get your API key from: https://platform.openai.com/api-keys');
+    const openaiKey = await ask('Enter OpenAI API key (or press Enter to skip): ');
+    
+    if (openaiKey.trim()) {
+      envVars.OPENAI_API_KEY = openaiKey.trim();
+      process.env.OPENAI_API_KEY = openaiKey.trim();
+      MODELS.openai.key = openaiKey.trim();
+      envChanged = true;
+      console.log('✅ OpenAI API key configured');
+    } else {
+      console.log('⏭️  OpenAI skipped - models will be unavailable');
+    }
+  } else {
+    MODELS.openai.key = process.env.OPENAI_API_KEY || envVars.OPENAI_API_KEY;
+    console.log('✅ OpenAI API key found');
+  }
+
+  // Check OpenRouter API Key
+  if (!process.env.OPENROUTER_API_KEY && !envVars.OPENROUTER_API_KEY) {
+    console.log('\n🌐 OpenRouter Configuration:');
+    console.log('Get your API key from: https://openrouter.ai/keys');
+    const openrouterKey = await ask('Enter OpenRouter API key (or press Enter to skip): ');
+    
+    if (openrouterKey.trim()) {
+      envVars.OPENROUTER_API_KEY = openrouterKey.trim();
+      process.env.OPENROUTER_API_KEY = openrouterKey.trim();
+      MODELS.openrouter.key = openrouterKey.trim();
+      envChanged = true;
+      console.log('✅ OpenRouter API key configured');
+    } else {
+      console.log('⏭️  OpenRouter skipped - models will be unavailable');
+    }
+  } else {
+    MODELS.openrouter.key = process.env.OPENROUTER_API_KEY || envVars.OPENROUTER_API_KEY;
+    console.log('✅ OpenRouter API key found');
+  }
+
+  // Save to .env file if changed
+  if (envChanged) {
+    const newEnvContent = Object.entries(envVars)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+    
+    fs.writeFileSync(envPath, newEnvContent, 'utf8');
+    console.log('\n💾 API keys saved to .env file');
+    console.log('🔒 Keep your .env file secure and never commit it to version control!');
+  }
+
+  // Check if any providers are available
+  const availableProviders = Object.keys(MODELS).filter(key => {
+    const model = MODELS[key];
+    return model.key || key === 'ollama';
+  });
+
+  if (availableProviders.length === 0) {
+    console.log('\n⚠️  No API providers configured.');
+    console.log('💡 You can still use Ollama if it\'s installed locally.');
+    
+    const continueAnyway = await ask('\nContinue anyway? (y/n, default: y): ');
+    if (continueAnyway.trim().toLowerCase() === 'n') {
+      console.log('👋 Goodbye! Run the application again to configure API keys.');
+      process.exit(0);
+    }
+  }
+
+  console.log('='.repeat(60));
+}
+function createEnvTemplate() {
+  const envTemplate = `# Enhanced QA AI Agent CLI - Environment Variables
+# Get OpenAI API key from: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+
+# Get OpenRouter API key from: https://openrouter.ai/keys  
+OPENROUTER_API_KEY=
+
+# Optional: Custom settings
+# OLLAMA_HOST=http://localhost:11434
+`;
+  
+  if (!fs.existsSync('.env')) {
+    fs.writeFileSync('.env', envTemplate, 'utf8');
+    console.log('📝 Created .env template file');
+  }
+}
+async function manageApiKeys() {
+  console.log('\n🔑 API Key Management');
+  console.log('='.repeat(40));
+  
+  const keyActions = [
+    '👀 View Current Keys (masked)',
+    '✏️  Update OpenAI Key',
+    '✏️  Update OpenRouter Key', 
+    '🗑️  Clear All Keys',
+    '📝 Recreate .env Template',
+    '⬅️  Back'
+  ];
+  
+  const actionIndex = await selectFromList(keyActions, "Choose action:", 0, true);
+  
+  switch (actionIndex) {
+    case 0: // View Keys
+      console.log('\n🔍 Current API Key Status:');
+      console.log(`OpenAI: ${process.env.OPENAI_API_KEY ? '✅ Set (' + process.env.OPENAI_API_KEY.substring(0, 8) + '...)' : '❌ Not set'}`);
+      console.log(`OpenRouter: ${process.env.OPENROUTER_API_KEY ? '✅ Set (' + process.env.OPENROUTER_API_KEY.substring(0, 8) + '...)' : '❌ Not set'}`);
+      break;
+      
+    case 1: // Update OpenAI
+      await updateApiKey('OPENAI_API_KEY', 'OpenAI', 'https://platform.openai.com/api-keys');
+      break;
+      
+    case 2: // Update OpenRouter  
+      await updateApiKey('OPENROUTER_API_KEY', 'OpenRouter', 'https://openrouter.ai/keys');
+      break;
+      
+    case 3: // Clear All
+      const confirmClear = await ask('\n⚠️  Really clear all API keys? (yes/no): ');
+      if (confirmClear.toLowerCase() === 'yes') {
+        await clearApiKeys();
+      }
+      break;
+      
+    case 4: // Recreate template
+      createEnvTemplate();
+      break;
+      
+    case 5: // Back
+      return;
+  }
+  
+  if (actionIndex !== 5) {
+    await ask('\nPress Enter to continue...');
+    await manageApiKeys();
+  }
+}
+
+async function updateApiKey(keyName, serviceName, url) {
+  console.log(`\n✏️  Update ${serviceName} API Key`);
+  console.log(`Get your key from: ${url}`);
+  
+  const newKey = await ask(`Enter new ${serviceName} API key: `);
+  if (newKey.trim()) {
+    await saveApiKeyToEnv(keyName, newKey.trim());
+    process.env[keyName] = newKey.trim();
+    
+    // Update model configuration
+    if (keyName === 'OPENAI_API_KEY') {
+      MODELS.openai.key = newKey.trim();
+    } else if (keyName === 'OPENROUTER_API_KEY') {
+      MODELS.openrouter.key = newKey.trim();
+    }
+    
+    console.log(`✅ ${serviceName} API key updated successfully`);
+  } else {
+    console.log('❌ No key provided');
+  }
+}
+
+async function saveApiKeyToEnv(keyName, keyValue) {
+  const envPath = '.env';
+  let envContent = '';
+  
+  if (fs.existsSync(envPath)) {
+    envContent = fs.readFileSync(envPath, 'utf8');
+  }
+  
+  const envLines = envContent.split('\n');
+  let keyFound = false;
+  
+  // Update existing key or add new one
+  for (let i = 0; i < envLines.length; i++) {
+    if (envLines[i].startsWith(`${keyName}=`)) {
+      envLines[i] = `${keyName}=${keyValue}`;
+      keyFound = true;
+      break;
+    }
+  }
+  
+  if (!keyFound) {
+    envLines.push(`${keyName}=${keyValue}`);
+  }
+  
+  fs.writeFileSync(envPath, envLines.join('\n'), 'utf8');
+}
+
+async function clearApiKeys() {
+  const envPath = '.env';
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    const envLines = envContent.split('\n');
+    
+    const clearedLines = envLines.map(line => {
+      if (line.startsWith('OPENAI_API_KEY=') || line.startsWith('OPENROUTER_API_KEY=')) {
+        return line.split('=')[0] + '=';
+      }
+      return line;
+    });
+    
+    fs.writeFileSync(envPath, clearedLines.join('\n'), 'utf8');
+  }
+  
+  // Clear from environment
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  MODELS.openai.key = null;
+  MODELS.openrouter.key = null;
+  
+  console.log('✅ All API keys cleared');
+}
 // =====================
 // START APPLICATION
 // =====================
