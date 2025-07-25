@@ -682,16 +682,23 @@ async function exportResult(result, taskName, model = '') {
       console.log(`${selectedFormat.icon} Format: ${selectedFormat.name}`);
       console.log(`📏 Size: ${(stats.size / 1024).toFixed(2)} KB\n`);
       
+      //New openfile functionality
       const openFile = await ask("Open the file? (y/n, default: n): ");
       if (openFile.trim().toLowerCase() === 'y') {
         try {
           const platform = process.platform;
           let cmd;
+
           if (platform === 'darwin') cmd = 'open';
           else if (platform === 'win32') cmd = 'start';
           else cmd = 'xdg-open';
-          
-          spawn(cmd, [fullPath], { detached: true, stdio: 'ignore' });
+
+          spawn(cmd, [fullPath], {
+            shell: true,
+            detached: true,
+            stdio: 'ignore'
+          });
+
           console.log(`🚀 Opening file with default application...\n`);
         } catch (error) {
           console.log(`⚠️  Could not open file: ${error.message}\n`);
